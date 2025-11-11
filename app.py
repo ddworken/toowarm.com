@@ -9,18 +9,17 @@ import logging
 import time
 from flask import Flask, render_template
 from datetime import datetime, timedelta
-from sqlalchemy import func
+from sqlalchemy import func, and_
 from models import WeatherForecast, get_session, init_db
+from locations import get_all_locations
 import requests
 import re
 
 # Configuration
-LATITUDE = 47.4254
-LONGITUDE = -121.4320
 BASE_URL = "https://api.weather.gov"
-HEADERS = {"User-Agent": "(Franklin Falls Weather Collector, weather@example.com)"}
+HEADERS = {"User-Agent": "(Too Warm Ice Climbing Weather, weather@example.com)"}
 FETCH_INTERVAL = 3600  # 1 hour
-DATABASE_URL = 'sqlite:///franklin_falls_weather.db'
+DATABASE_URL = 'sqlite:///ice_climbing_weather.db'
 
 # Set up logging
 logging.basicConfig(
@@ -37,13 +36,21 @@ app = Flask(__name__)
 # Weather Data Collection Functions
 # ============================================================================
 
-def fetch_and_store_weather():
-    """Fetch weather forecast and store it in the database."""
-    logger.info(f"Fetching weather data for Franklin Falls, WA ({LATITUDE}, {LONGITUDE})")
+def fetch_and_store_weather(location):
+    """
+    Fetch weather forecast for a specific location and store it in the database.
+
+    Args:
+        location: Dict with 'name', 'latitude', 'longitude', 'description'
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger.info(f"Fetching weather data for {location['name']} ({location['latitude']}, {location['longitude']})")
 
     try:
         # Step 1: Get grid point information
-        points_url = f"{BASE_URL}/points/{LATITUDE},{LONGITUDE}"
+        points_url = f"{BASE_URL}/points/{location['latitude']},{location['longitude']}"
         response = requests.get(points_url, headers=HEADERS, timeout=10)
         response.raise_for_status()
         points_data = response.json()
@@ -54,7 +61,7 @@ def fetch_and_store_weather():
         grid_y = points_data['properties']['gridY']
         forecast_url = points_data['properties']['forecast']
 
-        logger.info(f"Grid info: {grid_id}/{grid_x},{grid_y}")
+        logger.info(f"  Grid info: {grid_id}/{grid_x},{grid_y}")
 
         # Step 2: Get the actual forecast
         forecast_response = requests.get(forecast_url, headers=HEADERS, timeout=10)
@@ -73,6 +80,9 @@ def fetch_and_store_weather():
 
             for period in periods:
                 weather_record = WeatherForecast(
+                    location_name=location['name'],
+                    latitude=location['latitude'],
+                    longitude=location['longitude'],
                     fetched_at=fetched_at,
                     period_name=period['name'],
                     temperature=period['temperature'],
@@ -89,10 +99,10 @@ def fetch_and_store_weather():
                 records_added += 1
 
             session.commit()
-            logger.info(f"Successfully stored {records_added} forecast periods")
+            logger.info(f"  Stored {records_added} forecast periods for {location['name']}")
 
             first_period = periods[0]
-            logger.info(f"Current: {first_period['name']} - "
+            logger.info(f"  Current: {first_period['name']} - "
                        f"{first_period['temperature']}°{first_period['temperatureUnit']}, "
                        f"{first_period['shortForecast']}")
 
@@ -100,48 +110,168 @@ def fetch_and_store_weather():
 
         except Exception as e:
             session.rollback()
-            logger.error(f"Database error: {e}")
+            logger.error(f"Database error for {location['name']}: {e}")
             return False
         finally:
             session.close()
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching weather data: {e}")
+        logger.error(f"Error fetching weather data for {location['name']}: {e}")
         return False
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error for {location['name']}: {e}")
         return False
 
 
 def weather_collector_worker():
-    """Background worker that periodically fetches weather data."""
+    """Background worker that periodically fetches weather data for all locations."""
     logger.info("="*70)
     logger.info("Weather Collector Starting")
     logger.info("="*70)
     logger.info(f"Database: {DATABASE_URL}")
     logger.info(f"Fetch interval: {FETCH_INTERVAL} seconds ({FETCH_INTERVAL/60:.1f} minutes)")
+
+    locations = get_all_locations()
+    logger.info(f"Monitoring {len(locations)} locations:")
+    for loc in locations:
+        logger.info(f"  - {loc['name']}")
     logger.info("="*70)
 
     # Initialize database
     init_db(DATABASE_URL)
     logger.info("Database initialized")
 
-    # Fetch immediately on startup
-    fetch_and_store_weather()
+    # Fetch immediately on startup for all locations
+    logger.info("\n--- Initial fetch for all locations ---")
+    for location in locations:
+        fetch_and_store_weather(location)
 
     iteration = 1
     while True:
         try:
             time.sleep(FETCH_INTERVAL)
             iteration += 1
-            logger.info(f"--- Fetch iteration #{iteration} ---")
-            fetch_and_store_weather()
+            logger.info(f"\n--- Fetch iteration #{iteration} ---")
+            for location in locations:
+                fetch_and_store_weather(location)
         except Exception as e:
             logger.error(f"Error in collector worker: {e}")
 
 
 # ============================================================================
-# Web Application Functions
+# Ice Climbing Assessment Functions
+# ============================================================================
+
+def calculate_ice_climbing_score(temp, forecast_text, wind_speed):
+    """
+    Calculate an overall ice climbing score (0-100).
+
+    Args:
+        temp: Temperature in Fahrenheit
+        forecast_text: Short forecast description
+        wind_speed: Wind speed in mph
+
+    Returns:
+        int: Score from 0-100 (higher is better)
+    """
+    score = 0
+
+    # Temperature score (40 points max)
+    # Ice climbing is best when cold
+    if temp <= 20:
+        score += 40
+    elif temp <= 32:
+        score += 30
+    elif temp <= 40:
+        score += 15
+    else:
+        score += max(0, 10 - (temp - 40))
+
+    # Precipitation/conditions score (40 points max)
+    forecast_lower = forecast_text.lower()
+    if 'snow' in forecast_lower and 'rain' not in forecast_lower:
+        score += 40  # Snow is great for building ice
+    elif 'sunny' in forecast_lower or 'clear' in forecast_lower:
+        score += 30  # Clear is good for stable conditions
+    elif 'cloudy' in forecast_lower or 'overcast' in forecast_lower:
+        score += 25  # Cloudy is neutral
+    elif 'snow' in forecast_lower and 'rain' in forecast_lower:
+        score += 10  # Mixed is marginal
+    elif 'rain' in forecast_lower:
+        score += 0  # Rain is bad - melts ice
+    else:
+        score += 20  # Default neutral
+
+    # Wind score (20 points max)
+    # Calm conditions are safer
+    if wind_speed <= 5:
+        score += 20
+    elif wind_speed <= 10:
+        score += 15
+    elif wind_speed <= 15:
+        score += 10
+    elif wind_speed <= 20:
+        score += 5
+    else:
+        score += 0
+
+    return min(100, score)
+
+
+def get_assessment_grade(score):
+    """
+    Convert score to letter grade.
+
+    Args:
+        score: Ice climbing score (0-100)
+
+    Returns:
+        str: Letter grade (A+ to F)
+    """
+    if score >= 90:
+        return 'A+'
+    elif score >= 85:
+        return 'A'
+    elif score >= 80:
+        return 'A-'
+    elif score >= 75:
+        return 'B+'
+    elif score >= 70:
+        return 'B'
+    elif score >= 65:
+        return 'B-'
+    elif score >= 60:
+        return 'C+'
+    elif score >= 55:
+        return 'C'
+    elif score >= 50:
+        return 'C-'
+    elif score >= 45:
+        return 'D+'
+    elif score >= 40:
+        return 'D'
+    elif score >= 35:
+        return 'D-'
+    else:
+        return 'F'
+
+
+def get_assessment_color(grade):
+    """Get CSS class for assessment grade."""
+    if grade.startswith('A'):
+        return 'assessment-excellent'
+    elif grade.startswith('B'):
+        return 'assessment-good'
+    elif grade.startswith('C'):
+        return 'assessment-marginal'
+    elif grade.startswith('D'):
+        return 'assessment-poor'
+    else:
+        return 'assessment-bad'
+
+
+# ============================================================================
+# Web Application Helper Functions
 # ============================================================================
 
 def parse_wind_speed(wind_str):
@@ -194,73 +324,208 @@ def get_wind_color(wind_speed):
         return 'wind-poor'
 
 
-def get_historical_data(days=7):
-    """Get historical weather data for the past N days."""
+def calculate_rolling_assessment(period_date, all_night_temps):
+    """
+    Calculate rolling 5-day assessment for a specific date.
+
+    Args:
+        period_date: The datetime to assess
+        all_night_temps: List of tuples (date, temp) for all night periods
+
+    Returns:
+        dict: Assessment with status, color, and message
+    """
+    # Ensure we're working with date objects for comparison
+    if isinstance(period_date, datetime):
+        period_date = period_date.date()
+
+    # Get the 5 days before this period
+    cutoff_date = period_date - timedelta(days=5)
+
+    # Filter to temps in the 5-day window before this period
+    relevant_temps = [
+        temp for date, temp in all_night_temps
+        if cutoff_date <= date < period_date
+    ]
+
+    if len(relevant_temps) < 3:
+        # Not enough data
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': 'Insufficient data',
+            'temps': []
+        }
+
+    # Check if all lows were at or below thresholds
+    all_below_20 = all(temp <= 20 for temp in relevant_temps)
+    all_below_25 = all(temp <= 25 for temp in relevant_temps)
+
+    if all_below_20:
+        return {
+            'status': 'excellent',
+            'color': 'assessment-excellent',
+            'message': f'Past 5 days: all lows ≤20°F (min: {min(relevant_temps)}°F)',
+            'temps': relevant_temps
+        }
+    elif all_below_25:
+        return {
+            'status': 'good',
+            'color': 'assessment-good',
+            'message': f'Past 5 days: all lows ≤25°F (min: {min(relevant_temps)}°F)',
+            'temps': relevant_temps
+        }
+    else:
+        return {
+            'status': 'poor',
+            'color': 'assessment-poor',
+            'message': f'Past 5 days: lows too warm (min: {min(relevant_temps)}°F, max: {max(relevant_temps)}°F)',
+            'temps': relevant_temps
+        }
+
+
+def get_location_data(location_name, days=7):
+    """
+    Get both historical and future forecast data for a specific location.
+    Each period gets a rolling 5-day assessment based on night temps.
+
+    Args:
+        location_name: Name of the location
+        days: Number of days of historical data to retrieve
+
+    Returns:
+        list: Combined historical and future data with rolling assessments
+    """
     session = get_session(DATABASE_URL)
 
     try:
-        cutoff_time = datetime.utcnow() - timedelta(days=days)
+        # Get enough data for context (need more than display window for rolling assessment)
+        cutoff_time = datetime.utcnow() - timedelta(days=days+10)
+        all_periods = []
 
-        # Get all distinct fetch times in the past N days
+        # First, get ALL night temperatures for rolling assessment
+        # We need both historical and future night temps
+        all_night_forecasts = session.query(WeatherForecast).filter(
+            and_(
+                WeatherForecast.location_name == location_name,
+                WeatherForecast.fetched_at >= cutoff_time,
+                WeatherForecast.period_name.contains('Night')
+            )
+        ).order_by(WeatherForecast.fetched_at).all()
+
+        # Build a list of (date, temp) tuples for all night periods
+        night_temp_map = {}
+        for forecast in all_night_forecasts:
+            # Use fetched_at date as key (approximation of the period date)
+            date_key = forecast.fetched_at.date()
+            if date_key not in night_temp_map or forecast.fetched_at > night_temp_map[date_key][0]:
+                # Keep most recent forecast for each date
+                night_temp_map[date_key] = (forecast.fetched_at, forecast.temperature)
+
+        # Convert to sorted list of (date, temp)
+        all_night_temps = [(date, temp) for date, (_, temp) in sorted(night_temp_map.items())]
+
+        # Now get historical data for display (distinct fetch times)
+        display_cutoff = datetime.utcnow() - timedelta(days=days)
         fetch_times = session.query(WeatherForecast.fetched_at).filter(
-            WeatherForecast.fetched_at >= cutoff_time
+            and_(
+                WeatherForecast.location_name == location_name,
+                WeatherForecast.fetched_at >= display_cutoff
+            )
         ).distinct().order_by(WeatherForecast.fetched_at).all()
-
-        historical_data = []
 
         for (fetch_time,) in fetch_times:
             # Get the first period from each fetch
             forecast = session.query(WeatherForecast).filter(
-                WeatherForecast.fetched_at == fetch_time
+                and_(
+                    WeatherForecast.location_name == location_name,
+                    WeatherForecast.fetched_at == fetch_time
+                )
             ).first()
 
             if forecast:
-                historical_data.append({
-                    'date': fetch_time,
+                wind_speed = parse_wind_speed(forecast.wind_speed)
+
+                # Calculate rolling 5-day assessment
+                period_datetime = datetime.combine(fetch_time.date(), datetime.min.time())
+                rolling_assessment = calculate_rolling_assessment(period_datetime, all_night_temps)
+
+                all_periods.append({
+                    'is_historical': True,
+                    'date': fetch_time.strftime('%a %m/%d'),
                     'period_name': forecast.period_name,
                     'temperature': forecast.temperature,
-                    'temperature_unit': forecast.temperature_unit,
-                    'wind_speed': parse_wind_speed(forecast.wind_speed),
+                    'temp_color': get_temp_color(forecast.temperature),
+                    'wind_speed': wind_speed,
                     'wind_speed_str': forecast.wind_speed,
+                    'wind_color': get_wind_color(wind_speed),
                     'short_forecast': forecast.short_forecast,
-                    'detailed_forecast': forecast.detailed_forecast
+                    'forecast_color': get_forecast_color(forecast.short_forecast),
+                    'detailed_forecast': forecast.detailed_forecast,
+                    'rolling_assessment': rolling_assessment['status'],
+                    'rolling_assessment_color': rolling_assessment['color'],
+                    'rolling_assessment_message': rolling_assessment['message']
                 })
 
-        return historical_data
+        # Get future forecast (latest fetch)
+        latest_fetch = session.query(func.max(WeatherForecast.fetched_at)).filter(
+            WeatherForecast.location_name == location_name
+        ).scalar()
 
-    finally:
-        session.close()
+        if latest_fetch:
+            forecasts = session.query(WeatherForecast).filter(
+                and_(
+                    WeatherForecast.location_name == location_name,
+                    WeatherForecast.fetched_at == latest_fetch
+                )
+            ).order_by(WeatherForecast.id).all()
 
+            # For future periods, we need to estimate dates
+            # Start from today and add days for each period
+            current_date = datetime.utcnow()
 
-def get_future_forecast():
-    """Get the latest future forecast."""
-    session = get_session(DATABASE_URL)
+            # Also need to add future night temps to our assessment data
+            # Get future night forecasts from latest fetch
+            future_night_forecasts = [f for f in forecasts if 'Night' in f.period_name]
 
-    try:
-        # Get the most recent fetch
-        latest_fetch = session.query(func.max(WeatherForecast.fetched_at)).scalar()
+            # Add future night temps to the all_night_temps list
+            future_night_temps = []
+            for i, forecast in enumerate(future_night_forecasts):
+                # Estimate the date for this future period (roughly i*1.5 days out)
+                est_date = (current_date + timedelta(days=i*1.5)).date()
+                future_night_temps.append((est_date, forecast.temperature))
 
-        if not latest_fetch:
-            return []
+            # Combine with existing night temps
+            combined_night_temps = all_night_temps + future_night_temps
 
-        # Get all periods from the latest fetch
-        forecasts = session.query(WeatherForecast).filter(
-            WeatherForecast.fetched_at == latest_fetch
-        ).order_by(WeatherForecast.id).all()
+            # Process each future period
+            for i, forecast in enumerate(forecasts):
+                wind_speed = parse_wind_speed(forecast.wind_speed)
 
-        forecast_data = []
-        for forecast in forecasts:
-            forecast_data.append({
-                'period_name': forecast.period_name,
-                'temperature': forecast.temperature,
-                'temperature_unit': forecast.temperature_unit,
-                'wind_speed': parse_wind_speed(forecast.wind_speed),
-                'wind_speed_str': forecast.wind_speed,
-                'short_forecast': forecast.short_forecast,
-                'detailed_forecast': forecast.detailed_forecast
-            })
+                # Estimate the date for this period (roughly i*0.5 days out)
+                est_datetime = current_date + timedelta(days=i*0.5)
 
-        return forecast_data
+                # Calculate rolling 5-day assessment using combined data
+                rolling_assessment = calculate_rolling_assessment(est_datetime, combined_night_temps)
+
+                all_periods.append({
+                    'is_historical': False,
+                    'date': '',
+                    'period_name': forecast.period_name,
+                    'temperature': forecast.temperature,
+                    'temp_color': get_temp_color(forecast.temperature),
+                    'wind_speed': wind_speed,
+                    'wind_speed_str': forecast.wind_speed,
+                    'wind_color': get_wind_color(wind_speed),
+                    'short_forecast': forecast.short_forecast,
+                    'forecast_color': get_forecast_color(forecast.short_forecast),
+                    'detailed_forecast': forecast.detailed_forecast,
+                    'rolling_assessment': rolling_assessment['status'],
+                    'rolling_assessment_color': rolling_assessment['color'],
+                    'rolling_assessment_message': rolling_assessment['message']
+                })
+
+        return all_periods
 
     finally:
         session.close()
@@ -268,49 +533,22 @@ def get_future_forecast():
 
 @app.route('/')
 def index():
-    """Main page showing weather conditions for ice climbing."""
-    # Get historical data (past 7 days)
-    historical = get_historical_data(days=7)
+    """Main page showing weather conditions for all ice climbing locations."""
+    locations = get_all_locations()
 
-    # Get future forecast
-    future = get_future_forecast()
+    # Get data for each location
+    locations_data = []
+    for location in locations:
+        periods = get_location_data(location['name'], days=7)
 
-    # Combine and prepare for display
-    all_periods = []
+        if periods:  # Only include if we have data
+            locations_data.append({
+                'name': location['name'],
+                'description': location['description'],
+                'periods': periods
+            })
 
-    # Add historical data
-    for h in historical:
-        all_periods.append({
-            'is_historical': True,
-            'date': h['date'].strftime('%a %m/%d'),
-            'period_name': h['period_name'],
-            'temperature': h['temperature'],
-            'temp_color': get_temp_color(h['temperature']),
-            'wind_speed': h['wind_speed'],
-            'wind_speed_str': h['wind_speed_str'],
-            'wind_color': get_wind_color(h['wind_speed']),
-            'short_forecast': h['short_forecast'],
-            'forecast_color': get_forecast_color(h['short_forecast']),
-            'detailed_forecast': h['detailed_forecast']
-        })
-
-    # Add future forecast
-    for f in future:
-        all_periods.append({
-            'is_historical': False,
-            'date': '',
-            'period_name': f['period_name'],
-            'temperature': f['temperature'],
-            'temp_color': get_temp_color(f['temperature']),
-            'wind_speed': f['wind_speed'],
-            'wind_speed_str': f['wind_speed_str'],
-            'wind_color': get_wind_color(f['wind_speed']),
-            'short_forecast': f['short_forecast'],
-            'forecast_color': get_forecast_color(f['short_forecast']),
-            'detailed_forecast': f['detailed_forecast']
-        })
-
-    return render_template('index.html', periods=all_periods)
+    return render_template('index.html', locations=locations_data)
 
 
 # ============================================================================
@@ -320,7 +558,7 @@ def index():
 def main():
     """Main entry point that starts both the collector and web server."""
     logger.info("="*70)
-    logger.info("STARTING TOO WARM - Franklin Falls Ice Climbing Weather")
+    logger.info("STARTING TOO WARM - Ice Climbing Weather Monitor")
     logger.info("="*70)
 
     # Start weather collector in background thread

@@ -11,11 +11,17 @@ Base = declarative_base()
 
 
 class WeatherForecast(Base):
-    """Model for storing weather forecast data for Franklin Falls."""
+    """Model for storing weather forecast data for multiple ice climbing locations."""
 
     __tablename__ = 'weather_forecasts'
 
     id = Column(Integer, primary_key=True)
+
+    # Location information
+    location_name = Column(String(100), nullable=False, index=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+
     fetched_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     period_name = Column(String(100), nullable=False)
     temperature = Column(Integer, nullable=False)
@@ -31,7 +37,7 @@ class WeatherForecast(Base):
     grid_id = Column(String(10))
 
     def __repr__(self):
-        return f"<WeatherForecast(period='{self.period_name}', temp={self.temperature}°{self.temperature_unit}, fetched={self.fetched_at})>"
+        return f"<WeatherForecast(location='{self.location_name}', period='{self.period_name}', temp={self.temperature}°{self.temperature_unit}, fetched={self.fetched_at})>"
 
 
 def get_db_engine(database_url='sqlite:///franklin_falls_weather.db'):
