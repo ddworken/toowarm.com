@@ -405,22 +405,48 @@ def get_location_data(location_name, days=7):
 
         # First, get ALL night temperatures for rolling assessment
         # We need both historical and future night temps
-        all_night_forecasts = session.query(WeatherForecast).filter(
+
+        # Get historical nights (backfilled data)
+        historical_cutoff = datetime.utcnow() - timedelta(days=1)
+        historical_nights = session.query(WeatherForecast).filter(
             and_(
                 WeatherForecast.location_name == location_name,
                 WeatherForecast.fetched_at >= cutoff_time,
+                WeatherForecast.fetched_at < historical_cutoff,
                 WeatherForecast.period_name.contains('Night')
             )
         ).order_by(WeatherForecast.fetched_at).all()
 
-        # Build a list of (date, temp) tuples for all night periods
+        # Build night temp map from historical data
         night_temp_map = {}
-        for forecast in all_night_forecasts:
-            # Use fetched_at date as key (approximation of the period date)
+        for forecast in historical_nights:
+            # For historical data, fetched_at IS the period date
             date_key = forecast.fetched_at.date()
             if date_key not in night_temp_map or forecast.fetched_at > night_temp_map[date_key][0]:
-                # Keep most recent forecast for each date
                 night_temp_map[date_key] = (forecast.fetched_at, forecast.temperature)
+
+        # Get forecast nights (most recent fetch)
+        latest_fetch = session.query(func.max(WeatherForecast.fetched_at)).filter(
+            WeatherForecast.location_name == location_name
+        ).scalar()
+
+        if latest_fetch:
+            forecast_nights = session.query(WeatherForecast).filter(
+                and_(
+                    WeatherForecast.location_name == location_name,
+                    WeatherForecast.fetched_at == latest_fetch,
+                    WeatherForecast.period_name.contains('Night')
+                )
+            ).order_by(WeatherForecast.id).all()
+
+            # For forecast data, estimate dates based on position
+            current_date = datetime.utcnow().date()
+            for i, forecast in enumerate(forecast_nights):
+                # Each period is roughly 12 hours, so each night is about i days out
+                # First night (Tonight) is today, next is tomorrow, etc.
+                est_date = current_date + timedelta(days=i)
+                if est_date not in night_temp_map:
+                    night_temp_map[est_date] = (forecast.fetched_at, forecast.temperature)
 
         # Convert to sorted list of (date, temp)
         all_night_temps = [(date, temp) for date, (_, temp) in sorted(night_temp_map.items())]
@@ -481,32 +507,20 @@ def get_location_data(location_name, days=7):
             ).order_by(WeatherForecast.id).all()
 
             # For future periods, we need to estimate dates
-            # Start from today and add days for each period
-            current_date = datetime.utcnow()
-
-            # Also need to add future night temps to our assessment data
-            # Get future night forecasts from latest fetch
-            future_night_forecasts = [f for f in forecasts if 'Night' in f.period_name]
-
-            # Add future night temps to the all_night_temps list
-            future_night_temps = []
-            for i, forecast in enumerate(future_night_forecasts):
-                # Estimate the date for this future period (roughly i*1.5 days out)
-                est_date = (current_date + timedelta(days=i*1.5)).date()
-                future_night_temps.append((est_date, forecast.temperature))
-
-            # Combine with existing night temps
-            combined_night_temps = all_night_temps + future_night_temps
+            # Start from today (date only, not datetime) and add days for each period
+            current_date_only = datetime.utcnow().date()
+            base_datetime = datetime.combine(current_date_only, datetime.min.time())
 
             # Process each future period
             for i, forecast in enumerate(forecasts):
                 wind_speed = parse_wind_speed(forecast.wind_speed)
 
                 # Estimate the date for this period (roughly i*0.5 days out)
-                est_datetime = current_date + timedelta(days=i*0.5)
+                # Each period is ~12 hours, so period 0 is today, period 2 is tomorrow, etc.
+                est_datetime = base_datetime + timedelta(days=i*0.5)
 
-                # Calculate rolling 5-day assessment using combined data
-                rolling_assessment = calculate_rolling_assessment(est_datetime, combined_night_temps)
+                # Calculate rolling 5-day assessment
+                rolling_assessment = calculate_rolling_assessment(est_datetime, all_night_temps)
 
                 all_periods.append({
                     'is_historical': False,
@@ -549,6 +563,34 @@ def index():
             })
 
     return render_template('index.html', locations=locations_data)
+
+
+@app.route('/json')
+def index_json():
+    """JSON API endpoint returning all weather data and assessments."""
+    from flask import jsonify
+
+    locations = get_all_locations()
+
+    # Get data for each location
+    locations_data = []
+    for location in locations:
+        periods = get_location_data(location['name'], days=7)
+
+        if periods:  # Only include if we have data
+            locations_data.append({
+                'name': location['name'],
+                'description': location['description'],
+                'latitude': location['latitude'],
+                'longitude': location['longitude'],
+                'periods': periods
+            })
+
+    return jsonify({
+        'locations': locations_data,
+        'generated_at': datetime.utcnow().isoformat(),
+        'total_locations': len(locations_data)
+    })
 
 
 # ============================================================================
