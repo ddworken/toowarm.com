@@ -32,6 +32,12 @@ LOCATIONS = [
         'latitude': 47.78284,
         'longitude': -120.87577,
         'description': 'Ice climbing location in the Cascades'
+    },
+    {
+        'name': 'Banks Lake',
+        'latitude': 47.81441,
+        'longitude': -119.1536,
+        'description': 'Ice climbing area in Eastern Washington'
     }
 ]
 

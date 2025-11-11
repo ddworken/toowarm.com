@@ -17,7 +17,8 @@ LOCATION_TEMPS = {
     'Exit 38': {'high': (38, 52), 'low': (20, 35)},
     'Alpental': {'high': (35, 48), 'low': (18, 30)},
     'Leavenworth': {'high': (30, 45), 'low': (15, 28)},
-    'White Pine': {'high': (28, 42), 'low': (12, 25)}
+    'White Pine': {'high': (28, 42), 'low': (12, 25)},
+    'Banks Lake': {'high': (32, 48), 'low': (18, 30)}
 }
 
 WEATHER_CONDITIONS = [
