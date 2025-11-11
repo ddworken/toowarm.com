@@ -230,6 +230,14 @@
             flex-shrink: 0;
         }
 
+        .elevation-indicator {
+            font-size: 0.9em;
+            color: #0066cc;
+            font-weight: bold;
+            cursor: help;
+            margin-left: 2px;
+        }
+
         footer {
             margin-top: 30px;
             padding-top: 20px;
@@ -287,6 +295,9 @@
                         </td>
                         <td class="{{ period.temp_color }}">
                             {{ period.temperature }}°F
+                            {% if period.elevation_corrected %}
+                                <span class="elevation-indicator" title="Elevation adjusted: {{ period.correction_applied }}°F from NWS ({{ period.elevation_diff }} ft difference)">*</span>
+                            {% endif %}
                         </td>
                         <td class="{{ period.wind_color }}">
                             {{ period.wind_speed_str }}
@@ -341,6 +352,9 @@
                         <div class="legend-box temp-poor"></div>
                         <span>Poor: >40°F</span>
                     </div>
+                    <p style="margin-top: 10px; font-size: 0.9em; font-style: italic;">
+                        <span class="elevation-indicator">*</span> = Elevation adjusted for actual climbing site (hover for details)
+                    </p>
                 </div>
 
                 <div>

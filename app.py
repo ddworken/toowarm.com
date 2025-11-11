@@ -11,7 +11,7 @@ from flask import Flask, render_template
 from datetime import datetime, timedelta
 from sqlalchemy import func, and_
 from models import WeatherForecast, get_session, init_db
-from locations import get_all_locations
+from locations import get_all_locations, get_location_by_name, ELEVATION_CONFIG
 import requests
 import re
 
@@ -30,6 +30,90 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
+
+
+# ============================================================================
+# Elevation Correction Functions
+# ============================================================================
+
+def apply_elevation_correction(temperature, location_name):
+    """
+    Apply elevation-based temperature correction using atmospheric lapse rate.
+
+    Uses conservative lapse rate for humid Pacific Northwest winters.
+    Formula: Corrected_Temp = NWS_Temp - (Elevation_Diff / 1000 * Lapse_Rate)
+
+    When actual elevation < NWS grid elevation (negative diff):
+        - Climbing site is lower than NWS forecast point
+        - Should be warmer → adds positive correction
+
+    When actual elevation > NWS grid elevation (positive diff):
+        - Climbing site is higher than NWS forecast point
+        - Should be colder → adds negative correction
+
+    Args:
+        temperature: NWS forecast temperature (°F)
+        location_name: Name of location for elevation lookup
+
+    Returns:
+        dict with:
+        - corrected_temp: Adjusted temperature (rounded to int)
+        - original_temp: Original NWS temperature
+        - elevation_diff: Actual - NWS elevation (ft)
+        - correction_applied: Temperature adjustment (°F)
+        - has_correction: Boolean if correction was significant (>threshold)
+    """
+    if not ELEVATION_CONFIG.get('enabled', False):
+        return {
+            'corrected_temp': temperature,
+            'original_temp': temperature,
+            'elevation_diff': 0,
+            'correction_applied': 0,
+            'has_correction': False
+        }
+
+    location = get_location_by_name(location_name)
+    if not location:
+        logger.warning(f"Location '{location_name}' not found for elevation correction")
+        return {
+            'corrected_temp': temperature,
+            'original_temp': temperature,
+            'elevation_diff': 0,
+            'correction_applied': 0,
+            'has_correction': False
+        }
+
+    nws_elev = location.get('nws_grid_elevation_ft', 0)
+    actual_elev = location.get('actual_elevation_ft', 0)
+
+    if nws_elev == 0 or actual_elev == 0:
+        logger.warning(f"Missing elevation data for '{location_name}'")
+        return {
+            'corrected_temp': temperature,
+            'original_temp': temperature,
+            'elevation_diff': 0,
+            'correction_applied': 0,
+            'has_correction': False
+        }
+
+    elevation_diff = actual_elev - nws_elev
+    lapse_rate = ELEVATION_CONFIG.get('lapse_rate_per_1000ft', 3.0)
+
+    # Calculate correction (negative diff = warmer, positive diff = colder)
+    correction = (elevation_diff / 1000.0) * lapse_rate
+    corrected_temp = round(temperature - correction)
+
+    # Only flag as significant if exceeds threshold
+    threshold = ELEVATION_CONFIG.get('minimum_correction_threshold', 2.0)
+    has_significant_correction = abs(correction) >= threshold
+
+    return {
+        'corrected_temp': corrected_temp,
+        'original_temp': temperature,
+        'elevation_diff': elevation_diff,
+        'correction_applied': round(correction, 1),
+        'has_correction': has_significant_correction
+    }
 
 
 # ============================================================================
@@ -423,7 +507,9 @@ def get_location_data(location_name, days=7):
             # For historical data, fetched_at IS the period date
             date_key = forecast.fetched_at.date()
             if date_key not in night_temp_map or forecast.fetched_at > night_temp_map[date_key][0]:
-                night_temp_map[date_key] = (forecast.fetched_at, forecast.temperature)
+                # Apply elevation correction to night temperature for rolling assessment
+                elev_correction = apply_elevation_correction(forecast.temperature, location_name)
+                night_temp_map[date_key] = (forecast.fetched_at, elev_correction['corrected_temp'])
 
         # Get forecast nights (most recent fetch)
         latest_fetch = session.query(func.max(WeatherForecast.fetched_at)).filter(
@@ -446,7 +532,9 @@ def get_location_data(location_name, days=7):
                 # First night (Tonight) is today, next is tomorrow, etc.
                 est_date = current_date + timedelta(days=i)
                 if est_date not in night_temp_map:
-                    night_temp_map[est_date] = (forecast.fetched_at, forecast.temperature)
+                    # Apply elevation correction to night temperature for rolling assessment
+                    elev_correction = apply_elevation_correction(forecast.temperature, location_name)
+                    night_temp_map[est_date] = (forecast.fetched_at, elev_correction['corrected_temp'])
 
         # Convert to sorted list of (date, temp)
         all_night_temps = [(date, temp) for date, (_, temp) in sorted(night_temp_map.items())]
@@ -472,7 +560,10 @@ def get_location_data(location_name, days=7):
             if forecast:
                 wind_speed = parse_wind_speed(forecast.wind_speed)
 
-                # Calculate rolling 5-day assessment
+                # Apply elevation correction to temperature
+                elev_correction = apply_elevation_correction(forecast.temperature, location_name)
+
+                # Calculate rolling 5-day assessment (already using corrected night temps)
                 period_datetime = datetime.combine(fetch_time.date(), datetime.min.time())
                 rolling_assessment = calculate_rolling_assessment(period_datetime, all_night_temps)
 
@@ -480,8 +571,12 @@ def get_location_data(location_name, days=7):
                     'is_historical': True,
                     'date': fetch_time.strftime('%a %m/%d'),
                     'period_name': forecast.period_name,
-                    'temperature': forecast.temperature,
-                    'temp_color': get_temp_color(forecast.temperature),
+                    'temperature': elev_correction['corrected_temp'],
+                    'temperature_original': elev_correction['original_temp'],
+                    'elevation_corrected': elev_correction['has_correction'],
+                    'elevation_diff': elev_correction['elevation_diff'],
+                    'correction_applied': elev_correction['correction_applied'],
+                    'temp_color': get_temp_color(elev_correction['corrected_temp']),
                     'wind_speed': wind_speed,
                     'wind_speed_str': forecast.wind_speed,
                     'wind_color': get_wind_color(wind_speed),
@@ -515,19 +610,26 @@ def get_location_data(location_name, days=7):
             for i, forecast in enumerate(forecasts):
                 wind_speed = parse_wind_speed(forecast.wind_speed)
 
+                # Apply elevation correction to temperature
+                elev_correction = apply_elevation_correction(forecast.temperature, location_name)
+
                 # Estimate the date for this period (roughly i*0.5 days out)
                 # Each period is ~12 hours, so period 0 is today, period 2 is tomorrow, etc.
                 est_datetime = base_datetime + timedelta(days=i*0.5)
 
-                # Calculate rolling 5-day assessment
+                # Calculate rolling 5-day assessment (already using corrected night temps)
                 rolling_assessment = calculate_rolling_assessment(est_datetime, all_night_temps)
 
                 all_periods.append({
                     'is_historical': False,
                     'date': '',
                     'period_name': forecast.period_name,
-                    'temperature': forecast.temperature,
-                    'temp_color': get_temp_color(forecast.temperature),
+                    'temperature': elev_correction['corrected_temp'],
+                    'temperature_original': elev_correction['original_temp'],
+                    'elevation_corrected': elev_correction['has_correction'],
+                    'elevation_diff': elev_correction['elevation_diff'],
+                    'correction_applied': elev_correction['correction_applied'],
+                    'temp_color': get_temp_color(elev_correction['corrected_temp']),
                     'wind_speed': wind_speed,
                     'wind_speed_str': forecast.wind_speed,
                     'wind_color': get_wind_color(wind_speed),
