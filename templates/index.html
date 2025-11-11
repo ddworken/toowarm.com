@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Too Warm - Franklin Falls Ice Climbing Weather</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 3px solid #2c5aa0;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            color: #2c5aa0;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .location {
+            font-size: 1.1em;
+            color: #888;
+        }
+
+        .weather-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            font-size: 0.95em;
+        }
+
+        .weather-table th,
+        .weather-table td {
+            border: 1px solid #ddd;
+            padding: 12px 8px;
+            text-align: center;
+        }
+
+        .weather-table th {
+            background-color: #e8e8e8;
+            font-weight: 600;
+            color: #333;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .weather-table tbody tr:hover {
+            background-color: #f9f9f9;
+        }
+
+        .period-name {
+            font-weight: 600;
+            text-align: left;
+            min-width: 120px;
+        }
+
+        .historical-marker {
+            background-color: #fff8dc;
+        }
+
+        /* Temperature color coding - colder is better for ice climbing */
+        .temp-excellent {
+            background-color: #0d5e0d;
+            color: white;
+            font-weight: bold;
+        }
+
+        .temp-good {
+            background-color: #4caf50;
+            color: white;
+        }
+
+        .temp-marginal {
+            background-color: #ffeb3b;
+            color: #333;
+        }
+
+        .temp-poor {
+            background-color: #f44336;
+            color: white;
+        }
+
+        /* Condition color coding - snow is good, rain is bad */
+        .condition-excellent {
+            background-color: #0d5e0d;
+            color: white;
+            font-weight: bold;
+        }
+
+        .condition-good {
+            background-color: #81c784;
+            color: #333;
+        }
+
+        .condition-marginal {
+            background-color: #ffeb3b;
+            color: #333;
+        }
+
+        .condition-poor {
+            background-color: #f44336;
+            color: white;
+        }
+
+        .condition-neutral {
+            background-color: #e0e0e0;
+            color: #333;
+        }
+
+        /* Wind color coding - calm is better */
+        .wind-excellent {
+            background-color: #4caf50;
+            color: white;
+        }
+
+        .wind-good {
+            background-color: #81c784;
+            color: #333;
+        }
+
+        .wind-marginal {
+            background-color: #ffeb3b;
+            color: #333;
+        }
+
+        .wind-poor {
+            background-color: #f44336;
+            color: white;
+        }
+
+        .legend {
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+        }
+
+        .legend h3 {
+            margin-bottom: 15px;
+            color: #2c5aa0;
+        }
+
+        .legend-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .legend-box {
+            width: 30px;
+            height: 30px;
+            border: 1px solid #999;
+            border-radius: 3px;
+        }
+
+        footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .detail-tooltip {
+            cursor: help;
+            text-decoration: underline dotted;
+        }
+
+        .last-updated {
+            text-align: center;
+            margin-top: 20px;
+            color: #888;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🧊 Too Warm</h1>
+            <p class="subtitle">Ice Climbing Weather Conditions</p>
+            <p class="location">Franklin Falls, Washington</p>
+        </header>
+
+        <div class="weather-table-container">
+            <table class="weather-table">
+                <thead>
+                    <tr>
+                        <th>Period</th>
+                        <th>Temperature (°F)</th>
+                        <th>Wind</th>
+                        <th>Conditions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for period in periods %}
+                    <tr {% if period.is_historical %}class="historical-marker"{% endif %}>
+                        <td class="period-name">
+                            {% if period.is_historical %}
+                                📊 {{ period.date }}
+                            {% else %}
+                                {{ period.period_name }}
+                            {% endif %}
+                        </td>
+                        <td class="{{ period.temp_color }}">
+                            {{ period.temperature }}°F
+                        </td>
+                        <td class="{{ period.wind_color }}">
+                            {{ period.wind_speed_str }}
+                        </td>
+                        <td class="{{ period.forecast_color }}" title="{{ period.detailed_forecast }}">
+                            {{ period.short_forecast }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="legend">
+            <h3>Color Coding Guide for Ice Climbing</h3>
+            <div class="legend-grid">
+                <div>
+                    <h4>Temperature</h4>
+                    <div class="legend-item">
+                        <div class="legend-box temp-excellent"></div>
+                        <span>Excellent: ≤20°F</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box temp-good"></div>
+                        <span>Good: 21-32°F</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box temp-marginal"></div>
+                        <span>Marginal: 33-40°F</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box temp-poor"></div>
+                        <span>Poor: >40°F</span>
+                    </div>
+                </div>
+
+                <div>
+                    <h4>Conditions</h4>
+                    <div class="legend-item">
+                        <div class="legend-box condition-excellent"></div>
+                        <span>Snow (builds ice)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box condition-good"></div>
+                        <span>Clear/Sunny</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box condition-marginal"></div>
+                        <span>Mixed rain/snow</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box condition-poor"></div>
+                        <span>Rain (melts ice)</span>
+                    </div>
+                </div>
+
+                <div>
+                    <h4>Wind</h4>
+                    <div class="legend-item">
+                        <div class="legend-box wind-excellent"></div>
+                        <span>Calm: ≤5 mph</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box wind-good"></div>
+                        <span>Light: 6-10 mph</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box wind-marginal"></div>
+                        <span>Moderate: 11-15 mph</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box wind-poor"></div>
+                        <span>Windy: >15 mph</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="last-updated">
+            <p>Historical data (📊) shows actual conditions from past 7 days</p>
+            <p>Future periods show National Weather Service forecast</p>
+        </div>
+
+        <footer>
+            <p>Weather data from the National Weather Service API</p>
+            <p>Inspired by <a href="https://toorainy.com" target="_blank">toorainy.com</a></p>
+        </footer>
+    </div>
+</body>
+</html>
