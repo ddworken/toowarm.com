@@ -70,10 +70,13 @@ def main():
 
     print()
     print("=" * 80)
-    print("Legend:")
-    print("  ✓✓✓ EXCELLENT - All night lows ≤15°F (extremely cold, perfect ice)")
-    print("  ✓✓  GOOD - All night lows ≤25°F (cold enough for solid ice)")
-    print("  ✗   POOR - Night temps too warm (>25°F)")
+    print("Legend (Smooth Scoring System):")
+    print("  ✓✓✓ EXCELLENT - Score ≥75/100 (consistently cold, great ice)")
+    print("  ✓✓  GOOD - Score ≥45/100 (cold enough for solid ice)")
+    print("  ✗   POOR - Score <45/100 (too warm, unreliable ice)")
+    print()
+    print("  Score based on 5-day average: 0°F=100pts, 40°F=0pts")
+    print("  No harsh penalties - 26°F only slightly worse than 25°F")
     print("=" * 80)
 
 if __name__ == "__main__":

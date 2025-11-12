@@ -703,35 +703,52 @@ def calculate_rolling_assessment(period_date, all_night_temps):
             'temps': []
         }
 
-    # Check if all lows were at or below thresholds
-    # Tuned thresholds for more realistic assessments:
-    # - Excellent: all lows ≤15°F (extremely cold, perfect ice building)
-    # - Good: all lows ≤25°F (cold enough for solid ice)
-    # - Poor: any lows >25°F (too warm for reliable ice)
-    all_below_15 = all(temp <= 15 for temp in relevant_temps)
-    all_below_25 = all(temp <= 25 for temp in relevant_temps)
+    # Use a smooth scoring algorithm instead of hard cutoffs
+    # This treats 26°F as only slightly worse than 25°F
+    def score_temperature(temp):
+        """
+        Score a temperature for ice climbing conditions (0-100 scale).
+        100 = perfect ice building conditions
+        0 = no ice formation possible
 
-    if all_below_15:
-        return {
-            'status': 'excellent',
-            'color': 'assessment-excellent',
-            'message': f'Past 5 days: all lows ≤15°F (min: {min(relevant_temps)}°F)',
-            'temps': relevant_temps
-        }
-    elif all_below_25:
-        return {
-            'status': 'good',
-            'color': 'assessment-good',
-            'message': f'Past 5 days: all lows ≤25°F (min: {min(relevant_temps)}°F)',
-            'temps': relevant_temps
-        }
+        Uses smooth exponential decay - no harsh penalties for being 1°F over.
+        """
+        if temp <= 0:
+            return 100.0
+        elif temp >= 40:
+            return 0.0
+        else:
+            # Exponential decay: better differentiation at cold temps
+            # 10°F = ~90 points, 20°F = ~75 points, 30°F = ~50 points, 35°F = ~30 points
+            normalized = temp / 40.0  # Normalize to 0-1 range
+            score = 100.0 * (1.0 - normalized ** 1.5)  # Use power curve for exponential decay
+            return max(0.0, score)
+
+    # Calculate average score across all relevant temps
+    scores = [score_temperature(temp) for temp in relevant_temps]
+    avg_score = sum(scores) / len(scores)
+
+    # Classify based on average score (smooth thresholds)
+    if avg_score >= 75:
+        status = 'excellent'
+        color = 'assessment-excellent'
+        message = f'Past 5 days: excellent ice (score: {avg_score:.0f}/100, min: {min(relevant_temps)}°F)'
+    elif avg_score >= 45:
+        status = 'good'
+        color = 'assessment-good'
+        message = f'Past 5 days: good ice (score: {avg_score:.0f}/100, range: {min(relevant_temps)}-{max(relevant_temps)}°F)'
     else:
-        return {
-            'status': 'poor',
-            'color': 'assessment-poor',
-            'message': f'Past 5 days: lows too warm (min: {min(relevant_temps)}°F, max: {max(relevant_temps)}°F)',
-            'temps': relevant_temps
-        }
+        status = 'poor'
+        color = 'assessment-poor'
+        message = f'Past 5 days: poor ice (score: {avg_score:.0f}/100, max: {max(relevant_temps)}°F)'
+
+    return {
+        'status': status,
+        'color': color,
+        'message': message,
+        'temps': relevant_temps,
+        'score': round(avg_score, 1)
+    }
 
 
 # ============================================================================
