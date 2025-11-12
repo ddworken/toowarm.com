@@ -724,17 +724,29 @@ def calculate_rolling_assessment(period_date, all_night_temps):
             score = 100.0 * (1.0 - normalized ** 1.5)  # Use power curve for exponential decay
             return max(0.0, score)
 
-    # Calculate average score across all relevant temps
+    # Calculate WEIGHTED average score - earlier days weighted more heavily
+    # Ice builds up over time, so sustained cold is more valuable than sporadic cold
     scores = [score_temperature(temp) for temp in relevant_temps]
-    avg_score = sum(scores) / len(scores)
+
+    # Apply weights: earlier days (ice building) count more than recent days
+    # This rewards sustained cold periods and recognizes ice persists through slight warming
+    if len(scores) > 0:
+        # Use first N weights for N scores
+        all_weights = [1.4, 1.2, 1.1, 1.0, 1.0]  # Oldest → newest
+        weights = all_weights[:len(scores)]
+        weighted_sum = sum(score * weight for score, weight in zip(scores, weights))
+        total_weight = sum(weights)
+        avg_score = weighted_sum / total_weight if total_weight > 0 else 0.0
+    else:
+        avg_score = 0.0
 
     # Classify based on average score (smooth thresholds)
-    # Tuned based on validation data - excellent threshold raised to 78
-    if avg_score >= 78:
+    # Tuned based on validation data - excellent very rare (95), good captures most climbable days (25-95)
+    if avg_score >= 95:
         status = 'excellent'
         color = 'assessment-excellent'
         message = f'Past 5 days: excellent ice (score: {avg_score:.0f}/100, min: {min(relevant_temps)}°F)'
-    elif avg_score >= 45:
+    elif avg_score >= 25:
         status = 'good'
         color = 'assessment-good'
         message = f'Past 5 days: good ice (score: {avg_score:.0f}/100, range: {min(relevant_temps)}-{max(relevant_temps)}°F)'
