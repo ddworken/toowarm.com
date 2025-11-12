@@ -741,12 +741,12 @@ def calculate_rolling_assessment(period_date, all_night_temps):
         avg_score = 0.0
 
     # Classify based on average score (smooth thresholds)
-    # Tuned based on validation data - excellent very rare (95), good captures most climbable days (25-95)
+    # Tuned based on validation data - excellent very rare (95), good at 40+
     if avg_score >= 95:
         status = 'excellent'
         color = 'assessment-excellent'
         message = f'Past 5 days: excellent ice (score: {avg_score:.0f}/100, min: {min(relevant_temps)}°F)'
-    elif avg_score >= 25:
+    elif avg_score >= 40:
         status = 'good'
         color = 'assessment-good'
         message = f'Past 5 days: good ice (score: {avg_score:.0f}/100, range: {min(relevant_temps)}-{max(relevant_temps)}°F)'
