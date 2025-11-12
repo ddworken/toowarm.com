@@ -24,6 +24,11 @@ FETCH_INTERVAL = 3600  # 1 hour
 AVALANCHE_CACHE_HOURS = 6  # Cache future forecasts for 6 hours
 DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///ice_climbing_weather.db')
 
+# NCEI Climate Data Online (CDO) API Configuration
+# Get token from: https://www.ncdc.noaa.gov/cdo-web/token
+NCEI_BASE_URL = "https://www.ncei.noaa.gov/cdo-web/api/v2"
+NCEI_TOKEN = os.environ.get('NCEI_TOKEN')  # Set via: export NCEI_TOKEN=your_token_here
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -723,6 +728,509 @@ def calculate_rolling_assessment(period_date, all_night_temps):
             'message': f'Past 5 days: lows too warm (min: {min(relevant_temps)}°F, max: {max(relevant_temps)}°F)',
             'temps': relevant_temps
         }
+
+
+# ============================================================================
+# Historical Weather Data Functions
+# ============================================================================
+
+def get_nearest_station(location_name):
+    """
+    Get the nearest weather station for a location using NWS API.
+
+    Args:
+        location_name: Name of the location
+
+    Returns:
+        str: Station ID, or None if not found
+    """
+    location = get_location_by_name(location_name)
+    if not location:
+        logger.warning(f"Location '{location_name}' not found")
+        return None
+
+    try:
+        # Get gridpoint info
+        points_url = f"{BASE_URL}/points/{location['latitude']},{location['longitude']}"
+        resp = requests.get(points_url, headers=HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+
+        grid_id = data['properties']['gridId']
+        grid_x = data['properties']['gridX']
+        grid_y = data['properties']['gridY']
+
+        # Get stations for this gridpoint
+        stations_url = f"{BASE_URL}/gridpoints/{grid_id}/{grid_x},{grid_y}/stations"
+        stations_resp = requests.get(stations_url, headers=HEADERS)
+        stations_resp.raise_for_status()
+        stations_data = stations_resp.json()
+
+        if stations_data.get('features'):
+            # Return the first (nearest) station
+            station_id = stations_data['features'][0]['properties']['stationIdentifier']
+            logger.info(f"Found station {station_id} for {location_name}")
+            return station_id
+
+        logger.warning(f"No stations found for {location_name}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error getting station for {location_name}: {e}")
+        return None
+
+
+def get_historical_observations(station_id, start_date=None, end_date=None):
+    """
+    Fetch historical observations from a weather station using NWS API.
+
+    NOTE: The NWS API only provides observations from the last 6-7 days.
+    For older historical data, you would need to use the NCEI CDO API.
+
+    Args:
+        station_id: Weather station identifier (e.g., 'TALPE')
+        start_date: datetime object for start of range (optional)
+        end_date: datetime object for end of range (optional)
+
+    Returns:
+        list: List of observation dicts with 'timestamp' and 'temperature' keys
+    """
+    try:
+        obs_url = f"{BASE_URL}/stations/{station_id}/observations"
+        logger.info(f"Fetching observations from {station_id}")
+
+        resp = requests.get(obs_url, headers=HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+
+        observations = []
+        for obs_feature in data.get('features', []):
+            props = obs_feature['properties']
+
+            # Parse timestamp
+            timestamp_str = props.get('timestamp')
+            if not timestamp_str:
+                continue
+
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+
+            # Filter by date range if specified
+            if start_date and timestamp < start_date:
+                continue
+            if end_date and timestamp > end_date:
+                continue
+
+            # Get temperature (in Celsius)
+            temp_data = props.get('temperature', {})
+            temp_c = temp_data.get('value')
+
+            if temp_c is not None:
+                # Convert to Fahrenheit
+                temp_f = round(temp_c * 9/5 + 32, 1)
+
+                observations.append({
+                    'timestamp': timestamp,
+                    'temperature': temp_f
+                })
+
+        logger.info(f"Retrieved {len(observations)} observations from {station_id}")
+        return observations
+
+    except Exception as e:
+        logger.error(f"Error fetching observations from {station_id}: {e}")
+        return []
+
+
+def extract_night_temps(observations, apply_corrections=True, location_name=None):
+    """
+    Extract nighttime temperatures from observations.
+    Nighttime is defined as 6 PM to 6 AM.
+
+    Args:
+        observations: List of observation dicts from get_historical_observations
+        apply_corrections: Whether to apply elevation corrections
+        location_name: Location name for elevation correction lookup
+
+    Returns:
+        dict: Dict mapping date to minimum nighttime temperature for that night
+    """
+    night_temps = {}
+
+    for obs in observations:
+        timestamp = obs['timestamp']
+        temp = obs['temperature']
+        hour = timestamp.hour
+
+        # Nighttime: 6 PM (18:00) to 6 AM (6:00)
+        is_night = hour >= 18 or hour < 6
+
+        if is_night:
+            # Apply elevation correction if enabled
+            if apply_corrections and location_name:
+                correction = apply_elevation_correction(temp, location_name)
+                temp = correction['corrected_temp']
+
+            # Use the date of the night (if after midnight, still belongs to previous night)
+            if hour < 6:
+                # Early morning (12 AM - 6 AM) belongs to previous day's night
+                night_date = (timestamp.date() - timedelta(days=1))
+            else:
+                # Evening (6 PM - 11:59 PM)
+                night_date = timestamp.date()
+
+            # Track minimum temp for each night
+            if night_date not in night_temps:
+                night_temps[night_date] = temp
+            else:
+                night_temps[night_date] = min(night_temps[night_date], temp)
+
+    return night_temps
+
+
+def get_historical_ice_climbing_assessment(location_name, target_date):
+    """
+    Calculate the ice climbing assessment for a specific historical date.
+
+    This function:
+    1. Finds the nearest weather station for the location
+    2. Fetches observations from the NWS API (last 6-7 days available)
+    3. Extracts nighttime low temperatures (6 PM - 6 AM)
+    4. Applies elevation corrections
+    5. Calculates the 5-day rolling assessment for the target date
+
+    NOTE: The NWS API only provides observations from the last 6-7 days.
+    For historical data older than 7 days, you would need to:
+    - Use the NCEI Climate Data Online (CDO) API at https://www.ncei.noaa.gov/cdo-web/api/v2/
+    - Request an API token from NCEI
+    - Use their 'data' endpoint with dataset='GHCND' and datatype='TMIN'
+
+    Args:
+        location_name: Name of the ice climbing location
+        target_date: datetime or date object for the date to assess
+
+    Returns:
+        dict: Assessment with keys:
+            - status: 'excellent', 'good', 'poor', or 'unknown'
+            - color: CSS class for display
+            - message: Human-readable description
+            - temps: List of night temperatures used in calculation
+            - data_source: 'NWS_API' or error message
+            - station_id: Weather station used
+            - date_range: Tuple of (oldest_date, newest_date) in data
+    """
+    # Convert to date if datetime
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+
+    # Find nearest station
+    station_id = get_nearest_station(location_name)
+    if not station_id:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': 'No weather station found',
+            'temps': [],
+            'data_source': 'ERROR: No station found',
+            'station_id': None,
+            'date_range': (None, None)
+        }
+
+    # Fetch observations
+    # NWS API has ~7 days, so fetch all and filter
+    observations = get_historical_observations(station_id)
+
+    if not observations:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': 'No observations available',
+            'temps': [],
+            'data_source': 'ERROR: No observations',
+            'station_id': station_id,
+            'date_range': (None, None)
+        }
+
+    # Extract nighttime temperatures with elevation corrections
+    night_temps_dict = extract_night_temps(observations, apply_corrections=True, location_name=location_name)
+
+    # Convert to list of tuples for calculate_rolling_assessment
+    night_temps_list = [(date, temp) for date, temp in sorted(night_temps_dict.items())]
+
+    if not night_temps_list:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': 'No nighttime temperatures found',
+            'temps': [],
+            'data_source': 'NWS_API',
+            'station_id': station_id,
+            'date_range': (None, None)
+        }
+
+    # Check if target date is within available data range
+    oldest_date = night_temps_list[0][0]
+    newest_date = night_temps_list[-1][0]
+
+    if target_date > newest_date:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': f'Target date {target_date} is beyond available data (newest: {newest_date})',
+            'temps': [],
+            'data_source': 'NWS_API',
+            'station_id': station_id,
+            'date_range': (oldest_date, newest_date)
+        }
+
+    if target_date < oldest_date - timedelta(days=5):
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': f'Target date {target_date} requires data older than available (oldest: {oldest_date}). Use NCEI CDO API for historical data >7 days old.',
+            'temps': [],
+            'data_source': 'ERROR: Data too old for NWS API',
+            'station_id': station_id,
+            'date_range': (oldest_date, newest_date)
+        }
+
+    # Calculate the rolling assessment for the target date
+    assessment = calculate_rolling_assessment(target_date, night_temps_list)
+
+    # Add metadata
+    assessment['data_source'] = 'NWS_API'
+    assessment['station_id'] = station_id
+    assessment['date_range'] = (oldest_date, newest_date)
+
+    return assessment
+
+
+# ============================================================================
+# NCEI Climate Data Online (CDO) API Functions
+# ============================================================================
+
+def find_ncei_stations(latitude, longitude, radius_miles=30):
+    """
+    Find GHCND weather stations near a location.
+
+    Args:
+        latitude: Latitude of location
+        longitude: Longitude of location
+        radius_miles: Search radius in miles (default 30)
+
+    Returns:
+        list: List of station dicts with id, name, elevation, date range
+    """
+    if not NCEI_TOKEN:
+        logger.warning("NCEI_TOKEN not set. Cannot search for stations.")
+        return []
+
+    try:
+        # Convert radius to decimal degrees (rough approximation)
+        radius_deg = radius_miles / 69.0  # ~69 miles per degree latitude
+
+        extent = f"{latitude-radius_deg},{longitude-radius_deg},{latitude+radius_deg},{longitude+radius_deg}"
+
+        params = {
+            'datasetid': 'GHCND',
+            'datatypeid': 'TMIN',
+            'extent': extent,
+            'limit': 100
+        }
+
+        headers = {'token': NCEI_TOKEN}
+        resp = requests.get(f"{NCEI_BASE_URL}/stations", headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+
+        data = resp.json()
+        stations = []
+
+        for station in data.get('results', []):
+            stations.append({
+                'id': station['id'],
+                'name': station.get('name', 'Unknown'),
+                'elevation': station.get('elevation'),
+                'mindate': station.get('mindate'),
+                'maxdate': station.get('maxdate'),
+                'datacoverage': station.get('datacoverage', 0)
+            })
+
+        logger.info(f"Found {len(stations)} NCEI stations near ({latitude}, {longitude})")
+        return stations
+
+    except Exception as e:
+        logger.error(f"Error finding NCEI stations: {e}")
+        return []
+
+
+def get_ncei_tmin_data(station_id, start_date, end_date):
+    """
+    Fetch daily minimum temperature data from NCEI CDO API.
+
+    Args:
+        station_id: GHCND station ID (e.g., 'GHCND:USC00454174')
+        start_date: Start date (date object or YYYY-MM-DD string)
+        end_date: End date (date object or YYYY-MM-DD string)
+
+    Returns:
+        dict: Mapping of date to minimum temperature (°F)
+    """
+    if not NCEI_TOKEN:
+        logger.warning("NCEI_TOKEN not set. Cannot fetch NCEI data.")
+        return {}
+
+    try:
+        # Convert dates to strings if needed
+        if isinstance(start_date, date):
+            start_date = start_date.isoformat()
+        if isinstance(end_date, date):
+            end_date = end_date.isoformat()
+
+        params = {
+            'datasetid': 'GHCND',
+            'stationid': station_id,
+            'datatypeid': 'TMIN',
+            'startdate': start_date,
+            'enddate': end_date,
+            'units': 'standard',  # Returns Fahrenheit
+            'limit': 1000  # Max per request
+        }
+
+        headers = {'token': NCEI_TOKEN}
+        resp = requests.get(f"{NCEI_BASE_URL}/data", headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+
+        data = resp.json()
+        tmin_data = {}
+
+        for record in data.get('results', []):
+            record_date = date.fromisoformat(record['date'][:10])
+            tmin_f = record['value']  # Already in Fahrenheit with units='standard'
+            tmin_data[record_date] = tmin_f
+
+        logger.info(f"Retrieved {len(tmin_data)} TMIN records from {station_id}")
+        return tmin_data
+
+    except Exception as e:
+        logger.error(f"Error fetching NCEI TMIN data: {e}")
+        return {}
+
+
+def get_historical_ice_climbing_assessment_extended(location_name, target_date):
+    """
+    Calculate ice climbing assessment for ANY historical date using NCEI CDO API.
+
+    This function works for dates beyond the 7-day NWS API limit.
+    Requires NCEI_TOKEN environment variable to be set.
+
+    Args:
+        location_name: Name of the ice climbing location
+        target_date: datetime or date object for the date to assess
+
+    Returns:
+        dict: Assessment with same format as get_historical_ice_climbing_assessment
+    """
+    # Convert to date if datetime
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+
+    # First try NWS API for recent dates (< 7 days old)
+    days_old = (date.today() - target_date).days
+    if days_old < 7:
+        logger.info(f"Using NWS API for recent date: {target_date}")
+        return get_historical_ice_climbing_assessment(location_name, target_date)
+
+    # For older dates, use NCEI CDO API
+    if not NCEI_TOKEN:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': 'NCEI_TOKEN not set. Export NCEI_TOKEN environment variable or get token from https://www.ncdc.noaa.gov/cdo-web/token',
+            'temps': [],
+            'data_source': 'ERROR: No NCEI token',
+            'station_id': None,
+            'date_range': (None, None)
+        }
+
+    location = get_location_by_name(location_name)
+    if not location:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': f'Location "{location_name}" not found',
+            'temps': [],
+            'data_source': 'ERROR: Location not found',
+            'station_id': None,
+            'date_range': (None, None)
+        }
+
+    # Find nearest GHCND station
+    logger.info(f"Searching for NCEI stations near {location_name}")
+    stations = find_ncei_stations(location['latitude'], location['longitude'])
+
+    if not stations:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': 'No NCEI weather stations found nearby',
+            'temps': [],
+            'data_source': 'ERROR: No NCEI stations',
+            'station_id': None,
+            'date_range': (None, None)
+        }
+
+    # Use the first (nearest/best) station
+    station = stations[0]
+    station_id = station['id']
+
+    # We need 5 days before the target date for the rolling assessment
+    start_date = target_date - timedelta(days=5)
+    end_date = target_date
+
+    logger.info(f"Fetching TMIN data from {station_id} for {start_date} to {end_date}")
+    tmin_data = get_ncei_tmin_data(station_id, start_date, end_date)
+
+    if not tmin_data:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': f'No temperature data available for {target_date}',
+            'temps': [],
+            'data_source': 'NCEI_CDO_API',
+            'station_id': station_id,
+            'date_range': (None, None)
+        }
+
+    # Apply elevation corrections to TMIN values
+    corrected_temps = {}
+    for temp_date, temp in tmin_data.items():
+        correction = apply_elevation_correction(temp, location_name)
+        corrected_temps[temp_date] = correction['corrected_temp']
+
+    # Convert to list of tuples for calculate_rolling_assessment
+    night_temps_list = [(d, t) for d, t in sorted(corrected_temps.items())]
+
+    if len(night_temps_list) < 3:
+        return {
+            'status': 'unknown',
+            'color': 'assessment-neutral',
+            'message': f'Insufficient data (only {len(night_temps_list)} days)',
+            'temps': [],
+            'data_source': 'NCEI_CDO_API',
+            'station_id': station_id,
+            'date_range': (night_temps_list[0][0] if night_temps_list else None,
+                          night_temps_list[-1][0] if night_temps_list else None)
+        }
+
+    # Calculate the rolling assessment
+    assessment = calculate_rolling_assessment(target_date, night_temps_list)
+
+    # Add metadata
+    assessment['data_source'] = 'NCEI_CDO_API'
+    assessment['station_id'] = station_id
+    assessment['station_name'] = station['name']
+    assessment['date_range'] = (night_temps_list[0][0], night_temps_list[-1][0])
+
+    return assessment
 
 
 def get_location_data(location_name, days=7):
