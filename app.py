@@ -728,6 +728,16 @@ def calculate_rolling_assessment(period_date, all_night_temps):
     # Ice builds up over time, so sustained cold is more valuable than sporadic cold
     scores = [score_temperature(temp) for temp in relevant_temps]
 
+    # Apply persistence bonus: if there was recent cold that built ice, later warmer days get a boost
+    # This recognizes that ice persists through slight warming after a cold spell
+    if len(scores) >= 4:
+        # Check if the first 3 days had decent cold temps (indicating ice building)
+        early_days_avg = sum(scores[:3]) / 3
+        if early_days_avg >= 30:  # Moderate cold = ice was building
+            # Apply boost to last 2 days (triple the score for ice persistence)
+            persistence_multiplier = 3.0
+            scores[-2:] = [min(100, s * persistence_multiplier) for s in scores[-2:]]
+
     # Apply weights: earlier days (ice building) count more than recent days
     # This rewards sustained cold periods and recognizes ice persists through slight warming
     if len(scores) > 0:
