@@ -1054,6 +1054,10 @@ def find_ncei_stations(latitude, longitude, radius_miles=30):
                 'datacoverage': station.get('datacoverage', 0)
             })
 
+        # Sort stations by most recent data first (maxdate descending)
+        # This ensures we use active stations with current data
+        stations.sort(key=lambda s: s.get('maxdate', '1900-01-01'), reverse=True)
+
         logger.info(f"Found {len(stations)} NCEI stations near ({latitude}, {longitude})")
         return stations
 
