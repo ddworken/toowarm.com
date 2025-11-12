@@ -1,0 +1,10 @@
+# Ice Climbing Validation Data
+# Format: date,location,actual_rating,notes
+# actual_rating: excellent, good, or poor
+# Notes: Optional - describe what you observed that day
+#
+# Example entries (replace with your real data):
+# 2025-01-10,Leavenworth,poor,Ice was thin and melting
+# 2025-02-08,Leavenworth,good,Solid ice but not amazing
+# 2024-12-15,White Pine,excellent,Perfect thick ice all day
+2024-01-14,Franklin Falls,good,User confirmed good conditions
