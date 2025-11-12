@@ -65,6 +65,25 @@
         .location-description {
             font-size: 1em;
             opacity: 0.9;
+            margin-bottom: 8px;
+        }
+
+        .location-links {
+            font-size: 0.9em;
+        }
+
+        .location-links a {
+            color: #ffffff;
+            text-decoration: none;
+            margin-right: 15px;
+            opacity: 0.9;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.5);
+            padding-bottom: 2px;
+        }
+
+        .location-links a:hover {
+            opacity: 1;
+            border-bottom-color: #ffffff;
         }
 
         .weather-table {
@@ -89,9 +108,6 @@
             z-index: 10;
         }
 
-        .weather-table tbody tr:hover {
-            background-color: #f9f9f9;
-        }
 
         .period-name {
             font-weight: 600;
@@ -171,6 +187,37 @@
         .wind-poor {
             background-color: #f44336;
             color: white;
+        }
+
+        /* Avalanche danger color coding */
+        .avalanche-none {
+            background-color: #f5f5f5;
+            color: #333;
+        }
+
+        .avalanche-low {
+            background-color: white;
+            color: #333;
+        }
+
+        .avalanche-moderate {
+            background-color: white;
+            color: #333;
+        }
+
+        .avalanche-considerable {
+            background-color: white;
+            color: #333;
+        }
+
+        .avalanche-high {
+            background-color: white;
+            color: #333;
+        }
+
+        .avalanche-extreme {
+            background-color: white;
+            color: #333;
         }
 
         /* Rolling assessment color coding */
@@ -260,6 +307,13 @@
             <div class="location-header">
                 <h2>{{ location.name }}</h2>
                 <p class="location-description">{{ location.description }}</p>
+                {% if location.links %}
+                <div class="location-links">
+                    {% for link in location.links %}
+                        <a href="{{ link.url }}" target="_blank">{{ link.name }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
             </div>
 
             <table class="weather-table">
@@ -270,6 +324,7 @@
                         <th>Temperature</th>
                         <th>Wind</th>
                         <th>Conditions</th>
+                        <th>Avalanche Danger</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -279,7 +334,10 @@
                             {% if period.is_historical %}
                                 📊 {{ period.date }}
                             {% else %}
-                                {{ period.period_name }}
+                                {{ period.date }}
+                            {% endif %}
+                            {% if 'night' in period.period_name.lower() %}
+                                <br><span style="font-size: 0.85em; color: #666;">Night</span>
                             {% endif %}
                         </td>
                         <td class="{{ period.rolling_assessment_color }}" title="{{ period.rolling_assessment_message }}">
@@ -295,15 +353,27 @@
                         </td>
                         <td class="{{ period.temp_color }}">
                             {{ period.temperature }}°F
-                            {% if period.elevation_corrected %}
-                                <span class="elevation-indicator" title="Elevation adjusted: {{ period.correction_applied }}°F from NWS ({{ period.elevation_diff }} ft difference)">*</span>
-                            {% endif %}
                         </td>
                         <td class="{{ period.wind_color }}">
                             {{ period.wind_speed_str }}
                         </td>
                         <td class="{{ period.forecast_color }}" title="{{ period.detailed_forecast }}">
                             {{ period.short_forecast }}
+                        </td>
+                        <td class="{{ period.avalanche_color }}">
+                            {% if period.avalanche_rating == 1 %}
+                                <img src="{{ url_for('static', filename='img/avalanche-1-low.png') }}" alt="Low" title="Low avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                            {% elif period.avalanche_rating == 2 %}
+                                <img src="{{ url_for('static', filename='img/avalanche-2-moderate.png') }}" alt="Moderate" title="Moderate avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                            {% elif period.avalanche_rating == 3 %}
+                                <img src="{{ url_for('static', filename='img/avalanche-3-considerable.png') }}" alt="Considerable" title="Considerable avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                            {% elif period.avalanche_rating == 4 %}
+                                <img src="{{ url_for('static', filename='img/avalanche-4-high.png') }}" alt="High" title="High avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                            {% elif period.avalanche_rating == 5 %}
+                                <img src="{{ url_for('static', filename='img/avalanche-5-extreme.png') }}" alt="Extreme" title="Extreme avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                            {% else %}
+                                <img src="{{ url_for('static', filename='img/avalanche-none.svg') }}" alt="{{ period.avalanche_danger }}" title="{{ period.avalanche_danger }}" style="height: 50px; display: block; margin: 0 auto;">
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -335,6 +405,37 @@
                 </div>
 
                 <div>
+                    <h4>Avalanche Danger (NWAC)</h4>
+                    <div class="legend-item">
+                        <img src="{{ url_for('static', filename='img/avalanche-1-low.png') }}" alt="Low" style="height: 30px; width: 30px; object-fit: contain;">
+                        <span>Low (1)</span>
+                    </div>
+                    <div class="legend-item">
+                        <img src="{{ url_for('static', filename='img/avalanche-2-moderate.png') }}" alt="Moderate" style="height: 30px; width: 30px; object-fit: contain;">
+                        <span>Moderate (2)</span>
+                    </div>
+                    <div class="legend-item">
+                        <img src="{{ url_for('static', filename='img/avalanche-3-considerable.png') }}" alt="Considerable" style="height: 30px; width: 30px; object-fit: contain;">
+                        <span>Considerable (3)</span>
+                    </div>
+                    <div class="legend-item">
+                        <img src="{{ url_for('static', filename='img/avalanche-4-high.png') }}" alt="High" style="height: 30px; width: 30px; object-fit: contain;">
+                        <span>High (4)</span>
+                    </div>
+                    <div class="legend-item">
+                        <img src="{{ url_for('static', filename='img/avalanche-5-extreme.png') }}" alt="Extreme" style="height: 30px; width: 30px; object-fit: contain;">
+                        <span>Extreme (5)</span>
+                    </div>
+                    <div class="legend-item">
+                        <img src="{{ url_for('static', filename='img/avalanche-none.svg') }}" alt="N/A" style="height: 30px; width: 30px; object-fit: contain;">
+                        <span>No Forecast</span>
+                    </div>
+                    <p style="margin-top: 10px; font-size: 0.9em; font-style: italic;">
+                        From Northwest Avalanche Center forecasts
+                    </p>
+                </div>
+
+                <div>
                     <h4>Temperature</h4>
                     <div class="legend-item">
                         <div class="legend-box temp-excellent"></div>
@@ -352,9 +453,6 @@
                         <div class="legend-box temp-poor"></div>
                         <span>Poor: >40°F</span>
                     </div>
-                    <p style="margin-top: 10px; font-size: 0.9em; font-style: italic;">
-                        <span class="elevation-indicator">*</span> = Elevation adjusted for actual climbing site (hover for details)
-                    </p>
                 </div>
 
                 <div>

@@ -7,10 +7,11 @@ and the weather data collector in the background.
 import threading
 import logging
 import time
+import os
 from flask import Flask, render_template
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from sqlalchemy import func, and_
-from models import WeatherForecast, get_session, init_db
+from models import WeatherForecast, AvalancheForecast, get_session, init_db
 from locations import get_all_locations, get_location_by_name, ELEVATION_CONFIG
 import requests
 import re
@@ -18,8 +19,10 @@ import re
 # Configuration
 BASE_URL = "https://api.weather.gov"
 HEADERS = {"User-Agent": "(Too Warm Ice Climbing Weather, weather@example.com)"}
+NWAC_API_URL = "https://api.avalanche.org/v2/public/products"
 FETCH_INTERVAL = 3600  # 1 hour
-DATABASE_URL = 'sqlite:///ice_climbing_weather.db'
+AVALANCHE_CACHE_HOURS = 6  # Cache future forecasts for 6 hours
+DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///ice_climbing_weather.db')
 
 # Set up logging
 logging.basicConfig(
@@ -243,6 +246,224 @@ def weather_collector_worker():
 
 
 # ============================================================================
+# Avalanche Forecast Functions
+# ============================================================================
+
+def fetch_avalanche_forecast(zone_id, forecast_date):
+    """
+    Fetch avalanche forecast for a specific zone and date with smart caching.
+
+    Caching strategy:
+    - Past dates: Cache never expires (historical data)
+    - Current/future dates: Cache expires after AVALANCHE_CACHE_HOURS
+
+    Args:
+        zone_id: NWAC zone ID (e.g., '3' for Snoqualmie Pass)
+        forecast_date: Date object for the forecast
+
+    Returns:
+        dict with 'danger_rating', 'danger_level_text', 'zone_name', or None if no zone
+    """
+    if zone_id is None:
+        return {
+            'danger_rating': None,
+            'danger_level_text': 'No forecast',
+            'zone_name': 'No avalanche forecast',
+            'no_forecast': True
+        }
+
+    session = get_session(DATABASE_URL)
+
+    try:
+        # Check if we have cached data
+        cached = session.query(AvalancheForecast).filter(
+            and_(
+                AvalancheForecast.zone_id == zone_id,
+                AvalancheForecast.forecast_date == forecast_date
+            )
+        ).first()
+
+        today = date.today()
+
+        # If we have cached data
+        if cached:
+            # For past dates, cache never expires
+            if forecast_date < today:
+                logger.debug(f"Using cached historical avalanche data for zone {zone_id}, {forecast_date}")
+                return {
+                    'danger_rating': cached.danger_rating,
+                    'danger_level_text': cached.danger_level_text,
+                    'zone_name': cached.zone_name,
+                    'no_forecast': bool(cached.no_forecast)
+                }
+
+            # For current/future dates, check if cache is fresh
+            cache_age = datetime.utcnow() - cached.fetched_at
+            if cache_age.total_seconds() < AVALANCHE_CACHE_HOURS * 3600:
+                logger.debug(f"Using cached current avalanche data for zone {zone_id}, {forecast_date}")
+                return {
+                    'danger_rating': cached.danger_rating,
+                    'danger_level_text': cached.danger_level_text,
+                    'zone_name': cached.zone_name,
+                    'no_forecast': bool(cached.no_forecast)
+                }
+
+        # Need to fetch fresh data from API
+        logger.info(f"Fetching avalanche forecast for zone {zone_id}, date {forecast_date}")
+
+        # API expects YYYY-MM-DD format
+        date_str = forecast_date.strftime('%Y-%m-%d')
+        params = {
+            'avalanche_center_id': 'NWAC',
+            'date_start': date_str,
+            'date_end': date_str
+        }
+
+        response = requests.get(NWAC_API_URL, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        # Handle empty response (no forecast available)
+        if not data or len(data) == 0:
+            logger.info(f"No avalanche forecast available for zone {zone_id}, {forecast_date}")
+            # Store "no forecast" in DB
+            if cached:
+                cached.no_forecast = 1
+                cached.fetched_at = datetime.utcnow()
+            else:
+                new_record = AvalancheForecast(
+                    zone_id=zone_id,
+                    zone_name=f"Zone {zone_id}",
+                    forecast_date=forecast_date,
+                    danger_rating=None,
+                    danger_level_text='No forecast',
+                    no_forecast=1,
+                    fetched_at=datetime.utcnow()
+                )
+                session.add(new_record)
+            session.commit()
+
+            return {
+                'danger_rating': None,
+                'danger_level_text': 'No forecast',
+                'zone_name': f"Zone {zone_id}",
+                'no_forecast': True
+            }
+
+        # Find the forecast for this zone
+        zone_forecast = None
+        for product in data:
+            if product.get('product_type') != 'forecast':
+                continue
+
+            # Check if this product covers our zone
+            forecast_zones = product.get('forecast_zone', [])
+            for zone in forecast_zones:
+                if zone.get('zone_id') == zone_id:
+                    zone_forecast = product
+                    zone_name = zone.get('name', f"Zone {zone_id}")
+                    break
+
+            if zone_forecast:
+                break
+
+        if not zone_forecast:
+            logger.info(f"No forecast found for zone {zone_id} in API response")
+            # Store "no forecast" in DB
+            if cached:
+                cached.no_forecast = 1
+                cached.fetched_at = datetime.utcnow()
+            else:
+                new_record = AvalancheForecast(
+                    zone_id=zone_id,
+                    zone_name=f"Zone {zone_id}",
+                    forecast_date=forecast_date,
+                    danger_rating=None,
+                    danger_level_text='No forecast',
+                    no_forecast=1,
+                    fetched_at=datetime.utcnow()
+                )
+                session.add(new_record)
+            session.commit()
+
+            return {
+                'danger_rating': None,
+                'danger_level_text': 'No forecast',
+                'zone_name': f"Zone {zone_id}",
+                'no_forecast': True
+            }
+
+        # Extract danger rating
+        danger_rating = zone_forecast.get('danger_rating', -1)
+        danger_level_text = zone_forecast.get('danger_level_text', 'unknown')
+
+        # Store or update in DB
+        if cached:
+            cached.danger_rating = danger_rating
+            cached.danger_level_text = danger_level_text
+            cached.zone_name = zone_name
+            cached.no_forecast = 0
+            cached.fetched_at = datetime.utcnow()
+            cached.product_type = zone_forecast.get('product_type')
+        else:
+            new_record = AvalancheForecast(
+                zone_id=zone_id,
+                zone_name=zone_name,
+                forecast_date=forecast_date,
+                danger_rating=danger_rating,
+                danger_level_text=danger_level_text,
+                no_forecast=0,
+                fetched_at=datetime.utcnow(),
+                product_type=zone_forecast.get('product_type')
+            )
+            session.add(new_record)
+
+        session.commit()
+        logger.info(f"Stored avalanche forecast: zone {zone_id} ({zone_name}), {forecast_date}, danger={danger_level_text}")
+
+        return {
+            'danger_rating': danger_rating,
+            'danger_level_text': danger_level_text,
+            'zone_name': zone_name,
+            'no_forecast': False
+        }
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching avalanche forecast: {e}")
+        # Return cached data if available, even if stale
+        if cached:
+            return {
+                'danger_rating': cached.danger_rating,
+                'danger_level_text': cached.danger_level_text,
+                'zone_name': cached.zone_name,
+                'no_forecast': bool(cached.no_forecast)
+            }
+        return {
+            'danger_rating': None,
+            'danger_level_text': 'Error',
+            'zone_name': f"Zone {zone_id}",
+            'no_forecast': True
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error fetching avalanche forecast: {e}")
+        if cached:
+            return {
+                'danger_rating': cached.danger_rating,
+                'danger_level_text': cached.danger_level_text,
+                'zone_name': cached.zone_name,
+                'no_forecast': bool(cached.no_forecast)
+            }
+        return {
+            'danger_rating': None,
+            'danger_level_text': 'Error',
+            'zone_name': f"Zone {zone_id}",
+            'no_forecast': True
+        }
+    finally:
+        session.close()
+
+
+# ============================================================================
 # Ice Climbing Assessment Functions
 # ============================================================================
 
@@ -408,6 +629,42 @@ def get_wind_color(wind_speed):
         return 'wind-poor'
 
 
+def get_avalanche_color(danger_level_text, danger_rating):
+    """Get color class based on avalanche danger level."""
+    if danger_level_text in ['N/A', 'No forecast', 'Error']:
+        return 'avalanche-none'
+
+    # Use rating if available (more reliable than text)
+    if danger_rating is not None:
+        if danger_rating == -1 or danger_rating == 0:
+            return 'avalanche-none'
+        elif danger_rating == 1:
+            return 'avalanche-low'
+        elif danger_rating == 2:
+            return 'avalanche-moderate'
+        elif danger_rating == 3:
+            return 'avalanche-considerable'
+        elif danger_rating == 4:
+            return 'avalanche-high'
+        elif danger_rating >= 5:
+            return 'avalanche-extreme'
+
+    # Fallback to text-based
+    danger_lower = danger_level_text.lower()
+    if 'low' in danger_lower:
+        return 'avalanche-low'
+    elif 'moderate' in danger_lower:
+        return 'avalanche-moderate'
+    elif 'considerable' in danger_lower:
+        return 'avalanche-considerable'
+    elif 'high' in danger_lower:
+        return 'avalanche-high'
+    elif 'extreme' in danger_lower:
+        return 'avalanche-extreme'
+    else:
+        return 'avalanche-none'
+
+
 def calculate_rolling_assessment(period_date, all_night_temps):
     """
     Calculate rolling 5-day assessment for a specific date.
@@ -482,6 +739,10 @@ def get_location_data(location_name, days=7):
     """
     session = get_session(DATABASE_URL)
 
+    # Get avalanche zone for this location
+    location = get_location_by_name(location_name)
+    avalanche_zone_id = location.get('nwac_zone_id') if location else None
+
     try:
         # Get enough data for context (need more than display window for rolling assessment)
         cutoff_time = datetime.utcnow() - timedelta(days=days+10)
@@ -539,14 +800,27 @@ def get_location_data(location_name, days=7):
         # Convert to sorted list of (date, temp)
         all_night_temps = [(date, temp) for date, (_, temp) in sorted(night_temp_map.items())]
 
-        # Now get historical data for display (distinct fetch times)
+        # Now get historical data for display (one fetch per day)
+        # Exclude today's fetches - only show previous days in historical section
+        # Get the LATEST fetch for each day to avoid duplicates
         display_cutoff = datetime.utcnow() - timedelta(days=days)
-        fetch_times = session.query(WeatherForecast.fetched_at).filter(
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Subquery to get the max fetched_at per date
+        from sqlalchemy import Date, cast
+        subquery = session.query(
+            cast(WeatherForecast.fetched_at, Date).label('fetch_date'),
+            func.max(WeatherForecast.fetched_at).label('max_fetched_at')
+        ).filter(
             and_(
                 WeatherForecast.location_name == location_name,
-                WeatherForecast.fetched_at >= display_cutoff
+                WeatherForecast.fetched_at >= display_cutoff,
+                WeatherForecast.fetched_at < today_start
             )
-        ).distinct().order_by(WeatherForecast.fetched_at).all()
+        ).group_by('fetch_date').subquery()
+
+        # Get the actual fetch times
+        fetch_times = session.query(subquery.c.max_fetched_at).order_by(subquery.c.max_fetched_at).all()
 
         for (fetch_time,) in fetch_times:
             # Get the first period from each fetch
@@ -567,6 +841,9 @@ def get_location_data(location_name, days=7):
                 period_datetime = datetime.combine(fetch_time.date(), datetime.min.time())
                 rolling_assessment = calculate_rolling_assessment(period_datetime, all_night_temps)
 
+                # Fetch avalanche forecast for this date
+                avalanche_data = fetch_avalanche_forecast(avalanche_zone_id, fetch_time.date())
+
                 all_periods.append({
                     'is_historical': True,
                     'date': fetch_time.strftime('%a %m/%d'),
@@ -585,7 +862,10 @@ def get_location_data(location_name, days=7):
                     'detailed_forecast': forecast.detailed_forecast,
                     'rolling_assessment': rolling_assessment['status'],
                     'rolling_assessment_color': rolling_assessment['color'],
-                    'rolling_assessment_message': rolling_assessment['message']
+                    'rolling_assessment_message': rolling_assessment['message'],
+                    'avalanche_danger': avalanche_data['danger_level_text'],
+                    'avalanche_rating': avalanche_data['danger_rating'],
+                    'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating'])
                 })
 
         # Get future forecast (latest fetch)
@@ -620,9 +900,15 @@ def get_location_data(location_name, days=7):
                 # Calculate rolling 5-day assessment (already using corrected night temps)
                 rolling_assessment = calculate_rolling_assessment(est_datetime, all_night_temps)
 
+                # Format the date for display
+                formatted_date = est_datetime.strftime('%a %m/%d')
+
+                # Fetch avalanche forecast for this date
+                avalanche_data = fetch_avalanche_forecast(avalanche_zone_id, est_datetime.date())
+
                 all_periods.append({
                     'is_historical': False,
-                    'date': '',
+                    'date': formatted_date,
                     'period_name': forecast.period_name,
                     'temperature': elev_correction['corrected_temp'],
                     'temperature_original': elev_correction['original_temp'],
@@ -638,7 +924,10 @@ def get_location_data(location_name, days=7):
                     'detailed_forecast': forecast.detailed_forecast,
                     'rolling_assessment': rolling_assessment['status'],
                     'rolling_assessment_color': rolling_assessment['color'],
-                    'rolling_assessment_message': rolling_assessment['message']
+                    'rolling_assessment_message': rolling_assessment['message'],
+                    'avalanche_danger': avalanche_data['danger_level_text'],
+                    'avalanche_rating': avalanche_data['danger_rating'],
+                    'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating'])
                 })
 
         return all_periods
@@ -661,6 +950,7 @@ def index():
             locations_data.append({
                 'name': location['name'],
                 'description': location['description'],
+                'links': location.get('links', []),
                 'periods': periods
             })
 
@@ -718,9 +1008,11 @@ def main():
     time.sleep(2)
 
     # Start Flask web server (blocks here)
-    logger.info("Starting Flask web server on http://0.0.0.0:5000")
+    # Use environment variable for port, default to 5001 (5000 often conflicts with other services)
+    port = int(os.environ.get('PORT', 5001))
+    logger.info(f"Starting Flask web server on http://0.0.0.0:{port}")
     logger.info("="*70)
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=True)
 
 
 if __name__ == '__main__':
