@@ -71,7 +71,7 @@ def main():
     print()
     print("=" * 80)
     print("Legend (Smooth Scoring System):")
-    print("  ✓✓✓ EXCELLENT - Score ≥75/100 (consistently cold, great ice)")
+    print("  ✓✓✓ EXCELLENT - Score ≥78/100 (consistently very cold, great ice)")
     print("  ✓✓  GOOD - Score ≥45/100 (cold enough for solid ice)")
     print("  ✗   POOR - Score <45/100 (too warm, unreliable ice)")
     print()

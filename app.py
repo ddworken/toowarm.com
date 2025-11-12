@@ -729,7 +729,8 @@ def calculate_rolling_assessment(period_date, all_night_temps):
     avg_score = sum(scores) / len(scores)
 
     # Classify based on average score (smooth thresholds)
-    if avg_score >= 75:
+    # Tuned based on validation data - excellent threshold raised to 78
+    if avg_score >= 78:
         status = 'excellent'
         color = 'assessment-excellent'
         message = f'Past 5 days: excellent ice (score: {avg_score:.0f}/100, min: {min(relevant_temps)}°F)'
