@@ -71,9 +71,9 @@ def main():
     print()
     print("=" * 80)
     print("Legend:")
-    print("  ✓✓✓ EXCELLENT - All night lows ≤20°F")
-    print("  ✓✓  GOOD - All night lows ≤25°F")
-    print("  ✗   POOR - Night temps too warm")
+    print("  ✓✓✓ EXCELLENT - All night lows ≤15°F (extremely cold, perfect ice)")
+    print("  ✓✓  GOOD - All night lows ≤25°F (cold enough for solid ice)")
+    print("  ✗   POOR - Night temps too warm (>25°F)")
     print("=" * 80)
 
 if __name__ == "__main__":

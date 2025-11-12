@@ -704,14 +704,18 @@ def calculate_rolling_assessment(period_date, all_night_temps):
         }
 
     # Check if all lows were at or below thresholds
-    all_below_20 = all(temp <= 20 for temp in relevant_temps)
+    # Tuned thresholds for more realistic assessments:
+    # - Excellent: all lows ≤15°F (extremely cold, perfect ice building)
+    # - Good: all lows ≤25°F (cold enough for solid ice)
+    # - Poor: any lows >25°F (too warm for reliable ice)
+    all_below_15 = all(temp <= 15 for temp in relevant_temps)
     all_below_25 = all(temp <= 25 for temp in relevant_temps)
 
-    if all_below_20:
+    if all_below_15:
         return {
             'status': 'excellent',
             'color': 'assessment-excellent',
-            'message': f'Past 5 days: all lows ≤20°F (min: {min(relevant_temps)}°F)',
+            'message': f'Past 5 days: all lows ≤15°F (min: {min(relevant_temps)}°F)',
             'temps': relevant_temps
         }
     elif all_below_25:
