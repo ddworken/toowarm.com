@@ -528,6 +528,474 @@ def calculate_ice_climbing_score(temp, forecast_text, wind_speed):
     return min(100, score)
 
 
+def get_color_for_score(score):
+    """
+    Convert a 0-100 score to a smooth gradient color (red → orange → yellow → green).
+
+    Args:
+        score: Ice climbing score (0-100)
+
+    Returns:
+        str: Hex color code (e.g., '#FF8C00')
+    """
+    # Clamp score to 0-100
+    score = max(0, min(100, score))
+
+    # Define color stops for smooth gradient
+    # 0-20: Dark red to red
+    # 21-40: Red to orange
+    # 41-60: Orange to yellow
+    # 61-80: Yellow to light green
+    # 81-100: Light green to dark green
+
+    color_stops = [
+        (0, (139, 0, 0)),      # #8B0000 Dark red
+        (20, (220, 20, 60)),   # #DC143C Crimson
+        (40, (255, 140, 0)),   # #FF8C00 Dark orange
+        (60, (255, 215, 0)),   # #FFD700 Gold
+        (80, (144, 238, 144)), # #90EE90 Light green
+        (100, (0, 100, 0))     # #006400 Dark green
+    ]
+
+    # Find the two color stops to interpolate between
+    for i in range(len(color_stops) - 1):
+        low_score, low_color = color_stops[i]
+        high_score, high_color = color_stops[i + 1]
+
+        if low_score <= score <= high_score:
+            # Calculate interpolation factor (0.0 to 1.0)
+            range_size = high_score - low_score
+            if range_size == 0:
+                factor = 0
+            else:
+                factor = (score - low_score) / range_size
+
+            # Interpolate RGB values
+            r = int(low_color[0] + (high_color[0] - low_color[0]) * factor)
+            g = int(low_color[1] + (high_color[1] - low_color[1]) * factor)
+            b = int(low_color[2] + (high_color[2] - low_color[2]) * factor)
+
+            # Convert to hex
+            return f'#{r:02x}{g:02x}{b:02x}'
+
+    # Fallback (should never reach here)
+    return '#808080'  # Gray
+
+
+def check_hard_constraints(periods):
+    """
+    Check for hard constraints that make ice climbing conditions automatically bad.
+
+    Hard constraints:
+    1. Rain today
+    2. Overnight temp above 32°F
+    3. 3+ consecutive days with highs >35°F
+    4. Rain yesterday (significant penalty)
+
+    Args:
+        periods: List of period dictionaries with 'date', 'temp', 'forecast_text', etc.
+                 Should be sorted chronologically, with most recent period first (index 0)
+
+    Returns:
+        dict or None: If constraint violated, returns {'score': int, 'reason': str, 'color': str}
+                      If no constraint violated, returns None
+    """
+    if not periods or len(periods) == 0:
+        return None
+
+    # Most recent period is first (today/current period)
+    today = periods[0]
+    today_forecast = today.get('short_forecast', '').lower()
+
+    # Check 1: Rain today
+    if 'rain' in today_forecast and 'snow' not in today_forecast:
+        return {
+            'score': 15,
+            'reason': 'Rain today - ice melting',
+            'color': get_color_for_score(15)
+        }
+
+    # Check 2: Overnight temp above 32°F (today)
+    # Check if today is a night period or if we have recent night temp
+    today_temp = today.get('temperature')
+    is_night = 'night' in today.get('period_name', '').lower()
+
+    if is_night and today_temp and today_temp > 32:
+        return {
+            'score': 15,
+            'reason': f'Overnight temp {today_temp}°F above freezing',
+            'color': get_color_for_score(15)
+        }
+
+    # Check for overnight temps in past 24 hours
+    for period in periods[:2]:  # Check today and yesterday
+        period_temp = period.get('temperature')
+        period_is_night = 'night' in period.get('period_name', '').lower()
+        if period_is_night and period_temp and period_temp > 32:
+            return {
+                'score': 15,
+                'reason': f'Recent overnight temp {period_temp}°F above freezing',
+                'color': get_color_for_score(15)
+            }
+
+    # Check 3: 3+ consecutive days with highs >35°F
+    # Look for day periods (not nights) in the last 3+ days
+    day_periods = [p for p in periods if 'night' not in p.get('period_name', '').lower()]
+    if len(day_periods) >= 3:
+        consecutive_warm = 0
+        for period in day_periods[:5]:  # Check up to 5 days
+            if period.get('temperature', 0) > 35:
+                consecutive_warm += 1
+                if consecutive_warm >= 3:
+                    return {
+                        'score': 15,
+                        'reason': '3+ days with highs >35°F - sustained melting',
+                        'color': get_color_for_score(15)
+                    }
+            else:
+                consecutive_warm = 0
+
+    # Check 4: Rain yesterday (significant penalty, but not auto-bad)
+    if len(periods) >= 2:
+        yesterday = periods[1]
+        yesterday_forecast = yesterday.get('short_forecast', '').lower()
+        if 'rain' in yesterday_forecast and 'snow' not in yesterday_forecast:
+            # Return a penalty but not as severe as today's rain
+            return {
+                'score': 35,
+                'reason': 'Rain yesterday - ice may be compromised',
+                'color': get_color_for_score(35)
+            }
+
+    return None
+
+
+def calculate_temperature_score(periods):
+    """
+    Calculate temperature score (0-70 points) based on 5-day temp patterns.
+
+    Nighttime lows weighted 70%, daytime highs weighted 30%.
+    Considers both average temperatures and consistency.
+
+    Args:
+        periods: List of period dictionaries with 'temperature' and 'period_name'
+
+    Returns:
+        tuple: (score, explanation) where score is 0-70 and explanation is human-readable
+    """
+    if not periods or len(periods) == 0:
+        return (0, "No temperature data")
+
+    # Separate night and day temps
+    night_temps = [p['temperature'] for p in periods if 'night' in p.get('period_name', '').lower() and p.get('temperature') is not None]
+    day_temps = [p['temperature'] for p in periods if 'night' not in p.get('period_name', '').lower() and p.get('temperature') is not None]
+
+    if len(night_temps) == 0:
+        return (0, "No nighttime temperature data")
+
+    # Calculate averages for explanation
+    avg_night = sum(night_temps) / len(night_temps)
+    avg_day = sum(day_temps) / len(day_temps) if day_temps else avg_night
+
+    # Calculate base score from temperature thresholds
+    all_nights_20_or_below = all(t <= 20 for t in night_temps)
+    all_nights_25_or_below = all(t <= 25 for t in night_temps)
+    all_nights_32_or_below = all(t <= 32 for t in night_temps)
+
+    all_days_32_or_below = all(t <= 32 for t in day_temps) if day_temps else True
+    all_days_35_or_below = all(t <= 35 for t in day_temps) if day_temps else True
+    all_days_40_or_below = all(t <= 40 for t in day_temps) if day_temps else True
+
+    # Scoring tiers and build explanation
+    if all_nights_20_or_below and all_days_32_or_below:
+        base_score = 70  # Excellent conditions
+        explanation = f"Excellent sustained cold: all nights ≤20°F, all days ≤32°F (avg night {avg_night:.0f}°F, day {avg_day:.0f}°F)"
+    elif all_nights_25_or_below and all_days_35_or_below:
+        base_score = 55  # Good conditions
+        explanation = f"Good sustained cold: all nights ≤25°F, all days ≤35°F (avg night {avg_night:.0f}°F, day {avg_day:.0f}°F)"
+    elif all_nights_32_or_below and all_days_40_or_below:
+        base_score = 35  # Marginal conditions
+        explanation = f"Marginal temps: nights at/below freezing (avg night {avg_night:.0f}°F, day {avg_day:.0f}°F)"
+    else:
+        # Calculate proportional score for warmer conditions
+        # Weight: nights 70%, days 30%
+        weighted_avg = avg_night * 0.7 + avg_day * 0.3
+
+        # Score decreases as temps go above thresholds
+        if weighted_avg <= 25:
+            base_score = 50
+            explanation = f"Fair temps: avg night {avg_night:.0f}°F, day {avg_day:.0f}°F"
+        elif weighted_avg <= 32:
+            base_score = 30
+            explanation = f"Warm temps: avg night {avg_night:.0f}°F, day {avg_day:.0f}°F"
+        elif weighted_avg <= 40:
+            base_score = 15
+            explanation = f"Very warm temps: avg night {avg_night:.0f}°F, day {avg_day:.0f}°F"
+        else:
+            # Very warm - minimal score
+            base_score = max(0, 10 - (weighted_avg - 40) * 0.5)
+            explanation = f"Too warm for ice: avg night {avg_night:.0f}°F, day {avg_day:.0f}°F"
+
+    # Apply consistency penalty
+    # Variance in temps indicates unstable conditions (melting/refreezing cycles)
+    consistency_note = ""
+    if len(night_temps) >= 2:
+        night_variance = max(night_temps) - min(night_temps)
+        if night_variance > 15:
+            # High variance - significant penalty
+            base_score *= 0.7
+            consistency_note = f" (high temp swings: {night_variance:.0f}°F variance reduces score)"
+        elif night_variance > 10:
+            # Moderate variance
+            base_score *= 0.85
+            consistency_note = f" (moderate temp swings: {night_variance:.0f}°F variance)"
+        elif night_variance > 5:
+            # Low variance
+            base_score *= 0.95
+            consistency_note = f" (some temp variation: {night_variance:.0f}°F variance)"
+
+    return (base_score, explanation + consistency_note)
+
+
+def calculate_precipitation_penalty(periods):
+    """
+    Calculate precipitation penalty based on rain in the past 5 days.
+
+    - Rain in past 5 days (excluding yesterday): -10 pts per day
+    - Fresh snow: no change (0 pts)
+    - Mixed conditions: no change (0 pts)
+    - Rain yesterday is handled by hard constraints
+
+    Args:
+        periods: List of period dictionaries with 'short_forecast'
+                 Should be sorted with most recent first
+
+    Returns:
+        tuple: (penalty, explanation) where penalty is negative or zero
+    """
+    if not periods or len(periods) == 0:
+        return (0, "No precipitation data")
+
+    penalty = 0
+    rain_days = 0
+
+    # Skip index 0 (today) and 1 (yesterday) - these are handled by hard constraints
+    # Check days 2-6 (past 5 days excluding yesterday)
+    for i in range(2, min(len(periods), 12)):  # Check up to 12 periods (6 days of day/night)
+        forecast = periods[i].get('short_forecast', '').lower()
+
+        # Check for rain (but not mixed with snow)
+        if 'rain' in forecast and 'snow' not in forecast:
+            penalty -= 10
+            rain_days += 1
+
+    if rain_days == 0:
+        explanation = "No rain in past 5 days"
+    elif rain_days == 1:
+        explanation = "Rain on 1 day in past 5 days"
+    else:
+        explanation = f"Rain on {rain_days} days in past 5 days"
+
+    return (penalty, explanation)
+
+
+def calculate_wind_score(periods):
+    """
+    Calculate wind score (0-15 points) based on recent wind conditions.
+
+    - Calm (≤5 mph): 15 pts
+    - Light (6-10 mph): 12 pts
+    - Moderate (11-15 mph): 8 pts
+    - Windy (>15 mph): 3 pts
+
+    Args:
+        periods: List of period dictionaries with 'wind_speed' (parsed as int)
+
+    Returns:
+        tuple: (score, explanation) where score is 0-15
+    """
+    if not periods or len(periods) == 0:
+        return (8, "No wind data")  # Default middle score if no data
+
+    # Get average wind speed from recent periods
+    wind_speeds = [p.get('wind_speed', 0) for p in periods if p.get('wind_speed') is not None]
+
+    if not wind_speeds:
+        return (8, "No wind data")  # Default middle score
+
+    avg_wind = sum(wind_speeds) / len(wind_speeds)
+
+    if avg_wind <= 5:
+        return (15, f"Calm winds (avg {avg_wind:.0f} mph)")
+    elif avg_wind <= 10:
+        return (12, f"Light winds (avg {avg_wind:.0f} mph)")
+    elif avg_wind <= 15:
+        return (8, f"Moderate winds (avg {avg_wind:.0f} mph)")
+    else:
+        return (3, f"Windy conditions (avg {avg_wind:.0f} mph)")
+
+
+def calculate_trend_bonus(periods):
+    """
+    Calculate temperature trend bonus/penalty based on whether temps are cooling or warming.
+
+    - Cooling trend over 5 days: +10 to +15 pts
+    - Stable temps: 0 pts
+    - Warming trend: -5 to -10 pts
+
+    Args:
+        periods: List of period dictionaries with 'temperature'
+                 Should be sorted with most recent first (index 0 is newest)
+
+    Returns:
+        tuple: (bonus, explanation) where bonus can be positive or negative
+    """
+    if not periods or len(periods) < 3:
+        return (0, "Insufficient data for trend")
+
+    # Extract temperatures (most recent first)
+    temps = [p.get('temperature') for p in periods if p.get('temperature') is not None]
+
+    if len(temps) < 3:
+        return (0, "Insufficient data for trend")
+
+    # Compare recent temps (first 3) vs older temps (last 3)
+    # If recent is colder, that's a cooling trend (good)
+    # If recent is warmer, that's a warming trend (bad)
+    recent_avg = sum(temps[:min(3, len(temps))]) / min(3, len(temps))
+    older_avg = sum(temps[-min(3, len(temps)):]) / min(3, len(temps))
+
+    temp_change = recent_avg - older_avg
+
+    if temp_change <= -10:
+        # Strong cooling trend
+        return (15, f"Strong cooling trend (temps dropping {abs(temp_change):.0f}°F)")
+    elif temp_change <= -5:
+        # Moderate cooling trend
+        return (10, f"Cooling trend (temps dropping {abs(temp_change):.0f}°F)")
+    elif temp_change <= -2:
+        # Slight cooling
+        return (5, f"Slight cooling trend (temps dropping {abs(temp_change):.0f}°F)")
+    elif temp_change >= 10:
+        # Strong warming trend
+        return (-10, f"Strong warming trend (temps rising {temp_change:.0f}°F)")
+    elif temp_change >= 5:
+        # Moderate warming trend
+        return (-8, f"Warming trend (temps rising {temp_change:.0f}°F)")
+    elif temp_change >= 2:
+        # Slight warming
+        return (-3, f"Slight warming trend (temps rising {temp_change:.0f}°F)")
+    else:
+        # Stable (between -2 and +2)
+        return (0, "Stable temperatures")
+
+
+def assess_ice_conditions(periods):
+    """
+    Main function to assess ice climbing conditions with a sophisticated 0-100 score.
+
+    Takes into account:
+    - Temperature patterns (nighttime lows and daytime highs)
+    - Precipitation (rain penalties)
+    - Wind conditions
+    - Temperature trends (cooling vs warming)
+    - Hard constraints (rain today, warm overnight, sustained melting)
+
+    Args:
+        periods: List of period dictionaries with temperature, wind, forecast data
+                 Should be sorted with most recent period first (index 0)
+                 Should cover at least 5 days of data
+
+    Returns:
+        dict: {
+            'score': 0-100,
+            'color': '#HEX',
+            'status': 'text description',
+            'breakdown': {components and their scores}
+        }
+    """
+    if not periods or len(periods) == 0:
+        return {
+            'score': 0,
+            'color': get_color_for_score(0),
+            'status': 'No data available',
+            'breakdown': {}
+        }
+
+    # Check hard constraints first
+    constraint_violation = check_hard_constraints(periods)
+    if constraint_violation:
+        return {
+            'score': constraint_violation['score'],
+            'color': constraint_violation['color'],
+            'status': constraint_violation['reason'],
+            'breakdown': {
+                'constraint_violation': constraint_violation['reason']
+            },
+            'factors': [constraint_violation['reason']]
+        }
+
+    # Calculate score components (now returning tuples with explanations)
+    temp_score, temp_explanation = calculate_temperature_score(periods)
+    precip_penalty, precip_explanation = calculate_precipitation_penalty(periods)
+    wind_score, wind_explanation = calculate_wind_score(periods)
+    trend_bonus, trend_explanation = calculate_trend_bonus(periods)
+
+    # Calculate final score (can exceed 100 or go below 0, so we'll clamp)
+    raw_score = temp_score + precip_penalty + wind_score + trend_bonus
+    final_score = max(0, min(100, raw_score))
+
+    # Build human-readable factors list
+    factors = []
+
+    # Add factors sorted by absolute impact (largest first)
+    components = [
+        (temp_score, temp_explanation),
+        (wind_score, wind_explanation),
+        (trend_bonus, trend_explanation),
+        (precip_penalty, precip_explanation)
+    ]
+
+    # Sort by absolute value of score (largest impact first)
+    components.sort(key=lambda x: abs(x[0]), reverse=True)
+
+    for score_val, explanation in components:
+        if score_val != 0:  # Only include non-zero components
+            if score_val > 0:
+                factors.append(f"+{score_val:.0f} pts: {explanation}")
+            else:
+                factors.append(f"{score_val:.0f} pts: {explanation}")
+
+    # Generate color from score
+    color = get_color_for_score(final_score)
+
+    # Generate status text based on score
+    if final_score >= 80:
+        status = 'Excellent ice climbing conditions'
+    elif final_score >= 65:
+        status = 'Good ice climbing conditions'
+    elif final_score >= 50:
+        status = 'Fair ice climbing conditions'
+    elif final_score >= 35:
+        status = 'Marginal ice climbing conditions'
+    else:
+        status = 'Poor ice climbing conditions'
+
+    return {
+        'score': round(final_score, 1),
+        'color': color,
+        'status': status,
+        'breakdown': {
+            'temperature': round(temp_score, 1),
+            'precipitation': round(precip_penalty, 1),
+            'wind': round(wind_score, 1),
+            'trend': round(trend_bonus, 1),
+            'raw_total': round(raw_score, 1)
+        },
+        'factors': factors
+    }
+
+
 def get_assessment_grade(score):
     """
     Convert score to letter grade.
@@ -670,16 +1138,19 @@ def get_avalanche_color(danger_level_text, danger_rating):
         return 'avalanche-none'
 
 
-def calculate_rolling_assessment(period_date, all_night_temps):
+def calculate_rolling_assessment(period_date, all_night_temps, all_periods_data=None):
     """
-    Calculate rolling 5-day assessment for a specific date.
+    Calculate rolling 5-day assessment for a specific date using sophisticated scoring.
 
     Args:
         period_date: The datetime to assess
-        all_night_temps: List of tuples (date, temp) for all night periods
+        all_night_temps: List of tuples (date, temp) for all night periods (legacy parameter)
+        all_periods_data: List of ALL period dictionaries (day and night) with full weather data
+                         Format: [{'date': date_obj, 'temperature': int, 'wind_speed': int,
+                                  'short_forecast': str, 'period_name': str}, ...]
 
     Returns:
-        dict: Assessment with status, color, and message
+        dict: Assessment with status, color, message, and score
     """
     # Ensure we're working with date objects for comparison
     if isinstance(period_date, datetime):
@@ -688,6 +1159,54 @@ def calculate_rolling_assessment(period_date, all_night_temps):
     # Get the 5 days before this period
     cutoff_date = period_date - timedelta(days=5)
 
+    # If we have full period data, use the sophisticated assessment
+    if all_periods_data and len(all_periods_data) > 0:
+        # Filter to periods in the 5-day window (up to and including the target date)
+        relevant_periods = [
+            p for p in all_periods_data
+            if cutoff_date <= p.get('date') <= period_date
+        ]
+
+        # Sort periods chronologically (oldest first) for trend analysis
+        # But we'll reverse it later for hard constraints check
+        relevant_periods.sort(key=lambda p: p.get('date', datetime.min.date()))
+
+        if len(relevant_periods) < 3:
+            # Not enough data
+            return {
+                'status': 'unknown',
+                'color': '#808080',
+                'message': 'Insufficient data',
+                'score': 0
+            }
+
+        # Reverse so most recent is first (as expected by assess_ice_conditions)
+        relevant_periods_reversed = list(reversed(relevant_periods))
+
+        # Use the sophisticated assessment
+        assessment = assess_ice_conditions(relevant_periods_reversed)
+
+        # Build tooltip message with breakdown
+        tooltip_parts = [f"Score: {assessment['score']}/100", assessment['status']]
+        if assessment.get('factors'):
+            tooltip_parts.append("")  # Empty line
+            tooltip_parts.append("Breakdown:")
+            for factor in assessment['factors']:
+                tooltip_parts.append(f"  {factor}")
+
+        tooltip_message = "\n".join(tooltip_parts)
+
+        return {
+            'status': assessment['status'],
+            'color': assessment['color'],
+            'message': f"Score: {assessment['score']}/100 - {assessment['status']}",
+            'tooltip': tooltip_message,
+            'score': assessment['score'],
+            'breakdown': assessment['breakdown'],
+            'factors': assessment.get('factors', [])
+        }
+
+    # Fallback to legacy simple assessment if no full period data provided
     # Filter to temps in the 5-day window before this period
     relevant_temps = [
         temp for date, temp in all_night_temps
@@ -696,11 +1215,14 @@ def calculate_rolling_assessment(period_date, all_night_temps):
 
     if len(relevant_temps) < 3:
         # Not enough data
+        msg = 'Insufficient data'
         return {
             'status': 'unknown',
             'color': 'assessment-neutral',
-            'message': 'Insufficient data',
-            'temps': []
+            'message': msg,
+            'tooltip': msg,
+            'temps': [],
+            'score': 0
         }
 
     # Use a smooth scoring algorithm instead of hard cutoffs
@@ -1351,6 +1873,71 @@ def get_location_data(location_name, days=7):
         # Convert to sorted list of (date, temp)
         all_night_temps = [(date, temp) for date, (_, temp) in sorted(night_temp_map.items())]
 
+        # ================================================================
+        # Collect ALL period data (day and night) for sophisticated assessment
+        # ================================================================
+        all_periods_data = []
+
+        # Get historical periods (ALL periods, not just nights)
+        historical_all = session.query(WeatherForecast).filter(
+            and_(
+                WeatherForecast.location_name == location_name,
+                WeatherForecast.fetched_at >= cutoff_time,
+                WeatherForecast.fetched_at < historical_cutoff
+            )
+        ).order_by(WeatherForecast.fetched_at).all()
+
+        # Build a map of date -> list of periods for that date
+        date_periods_map = {}
+        for forecast in historical_all:
+            date_key = forecast.fetched_at.date()
+            if date_key not in date_periods_map:
+                date_periods_map[date_key] = []
+
+            wind_speed = parse_wind_speed(forecast.wind_speed)
+            elev_correction = apply_elevation_correction(forecast.temperature, location_name)
+
+            date_periods_map[date_key].append({
+                'date': date_key,
+                'temperature': elev_correction['corrected_temp'],
+                'wind_speed': wind_speed,
+                'short_forecast': forecast.short_forecast,
+                'period_name': forecast.period_name
+            })
+
+        # For each date, keep only the latest fetch's periods
+        for date_key, periods in date_periods_map.items():
+            # Add all periods from this date
+            all_periods_data.extend(periods)
+
+        # Add forecast periods (from latest fetch)
+        if latest_fetch:
+            forecast_all = session.query(WeatherForecast).filter(
+                and_(
+                    WeatherForecast.location_name == location_name,
+                    WeatherForecast.fetched_at == latest_fetch
+                )
+            ).order_by(WeatherForecast.id).all()
+
+            current_date = datetime.utcnow().date()
+            for i, forecast in enumerate(forecast_all):
+                # Estimate date for this period
+                est_date = current_date + timedelta(days=i*0.5)
+
+                wind_speed = parse_wind_speed(forecast.wind_speed)
+                elev_correction = apply_elevation_correction(forecast.temperature, location_name)
+
+                all_periods_data.append({
+                    'date': est_date.date() if isinstance(est_date, datetime) else est_date,
+                    'temperature': elev_correction['corrected_temp'],
+                    'wind_speed': wind_speed,
+                    'short_forecast': forecast.short_forecast,
+                    'period_name': forecast.period_name
+                })
+
+        # Sort all periods by date
+        all_periods_data.sort(key=lambda p: p['date'])
+
         # Now get historical data for display (one fetch per day)
         # Exclude today's fetches - only show previous days in historical section
         # Get the LATEST fetch for each day to avoid duplicates
@@ -1388,9 +1975,9 @@ def get_location_data(location_name, days=7):
                 # Apply elevation correction to temperature
                 elev_correction = apply_elevation_correction(forecast.temperature, location_name)
 
-                # Calculate rolling 5-day assessment (already using corrected night temps)
+                # Calculate rolling 5-day assessment (using sophisticated scoring)
                 period_datetime = datetime.combine(fetch_time.date(), datetime.min.time())
-                rolling_assessment = calculate_rolling_assessment(period_datetime, all_night_temps)
+                rolling_assessment = calculate_rolling_assessment(period_datetime, all_night_temps, all_periods_data)
 
                 # Fetch avalanche forecast for this date
                 avalanche_data = fetch_avalanche_forecast(avalanche_zone_id, fetch_time.date())
@@ -1414,6 +2001,9 @@ def get_location_data(location_name, days=7):
                     'rolling_assessment': rolling_assessment['status'],
                     'rolling_assessment_color': rolling_assessment['color'],
                     'rolling_assessment_message': rolling_assessment['message'],
+                    'rolling_assessment_tooltip': rolling_assessment.get('tooltip', rolling_assessment['message']),
+                    'score': rolling_assessment.get('score', 0),
+                    'factors': rolling_assessment.get('factors', []),
                     'avalanche_danger': avalanche_data['danger_level_text'],
                     'avalanche_rating': avalanche_data['danger_rating'],
                     'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating'])
@@ -1448,8 +2038,8 @@ def get_location_data(location_name, days=7):
                 # Each period is ~12 hours, so period 0 is today, period 2 is tomorrow, etc.
                 est_datetime = base_datetime + timedelta(days=i*0.5)
 
-                # Calculate rolling 5-day assessment (already using corrected night temps)
-                rolling_assessment = calculate_rolling_assessment(est_datetime, all_night_temps)
+                # Calculate rolling 5-day assessment (using sophisticated scoring)
+                rolling_assessment = calculate_rolling_assessment(est_datetime, all_night_temps, all_periods_data)
 
                 # Format the date for display
                 formatted_date = est_datetime.strftime('%a %m/%d')
@@ -1476,6 +2066,9 @@ def get_location_data(location_name, days=7):
                     'rolling_assessment': rolling_assessment['status'],
                     'rolling_assessment_color': rolling_assessment['color'],
                     'rolling_assessment_message': rolling_assessment['message'],
+                    'rolling_assessment_tooltip': rolling_assessment.get('tooltip', rolling_assessment['message']),
+                    'score': rolling_assessment.get('score', 0),
+                    'factors': rolling_assessment.get('factors', []),
                     'avalanche_danger': avalanche_data['danger_level_text'],
                     'avalanche_rating': avalanche_data['danger_rating'],
                     'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating'])

@@ -27,6 +27,22 @@
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
 
+        .table-wrapper {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin: 0 -15px;
+            padding: 0 15px;
+        }
+
+        @media (max-width: 768px) {
+            .table-wrapper {
+                margin: 0;
+                padding: 0;
+                border-radius: 5px;
+                box-shadow: inset -10px 0 10px -10px rgba(0, 0, 0, 0.1);
+            }
+        }
+
         header {
             text-align: center;
             margin-bottom: 30px;
@@ -293,9 +309,87 @@
             color: #666;
             font-size: 0.9em;
         }
+
+        /* Custom Tooltip Styles */
+        .custom-tooltip {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 0.85em;
+            line-height: 1.5;
+            white-space: pre-line;
+            z-index: 9999;
+            pointer-events: none;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            max-width: 400px;
+            display: none;
+        }
+
+        .custom-tooltip.show {
+            display: block;
+        }
+
+        .score-cell {
+            position: relative;
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            .container {
+                padding: 15px;
+            }
+
+            h1 {
+                font-size: 1.8em;
+            }
+
+            .subtitle {
+                font-size: 1em;
+            }
+
+            .location-header h2 {
+                font-size: 1.4em;
+            }
+
+            .location-description {
+                font-size: 0.9em;
+            }
+
+            .weather-table {
+                font-size: 0.8em;
+            }
+
+            .weather-table th,
+            .weather-table td {
+                padding: 6px 4px;
+                white-space: nowrap;
+            }
+
+            .period-name {
+                min-width: 90px;
+                font-size: 0.85em;
+            }
+
+            .legend-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .custom-tooltip {
+                max-width: 280px;
+                font-size: 0.8em;
+                padding: 10px 12px;
+            }
+        }
     </style>
 </head>
 <body>
+    <div id="customTooltip" class="custom-tooltip"></div>
     <div class="container">
         <header>
             <h1>🧊 Too Warm</h1>
@@ -316,6 +410,7 @@
                 {% endif %}
             </div>
 
+            <div class="table-wrapper">
             <table class="weather-table">
                 <thead>
                     <tr>
@@ -340,8 +435,10 @@
                                 <br><span style="font-size: 0.85em; color: #666;">Night</span>
                             {% endif %}
                         </td>
-                        <td class="{{ period.rolling_assessment_color }}" title="{{ period.rolling_assessment_message }}">
-                            {% if period.rolling_assessment == 'excellent' %}
+                        <td class="score-cell" style="background-color: {{ period.rolling_assessment_color }}; color: {% if period.score|default(50) >= 50 %}#000{% else %}#fff{% endif %}; cursor: help;" data-tooltip="{{ period.rolling_assessment_tooltip|default('No tooltip data')|escape }}">
+                            {% if period.score is defined %}
+                                {{ period.score|int }}
+                            {% elif period.rolling_assessment == 'excellent' %}
                                 ✓✓✓
                             {% elif period.rolling_assessment == 'good' %}
                                 ✓✓
@@ -357,7 +454,7 @@
                         <td class="{{ period.wind_color }}">
                             {{ period.wind_speed_str }}
                         </td>
-                        <td class="{{ period.forecast_color }}" title="{{ period.detailed_forecast }}">
+                        <td class="score-cell {{ period.forecast_color }}" style="cursor: help;" data-tooltip="{{ period.detailed_forecast }}">
                             {{ period.short_forecast }}
                         </td>
                         <td class="{{ period.avalanche_color }}">
@@ -379,6 +476,7 @@
                     {% endfor %}
                 </tbody>
             </table>
+            </div>
         </div>
         {% endfor %}
 
@@ -503,5 +601,57 @@
             <p>Inspired by <a href="https://toorainy.com" target="_blank">toorainy.com</a></p>
         </footer>
     </div>
+
+    <script>
+        // Custom tooltip functionality
+        const tooltip = document.getElementById('customTooltip');
+        const scoreCells = document.querySelectorAll('.score-cell[data-tooltip]');
+
+        scoreCells.forEach(cell => {
+            cell.addEventListener('mouseenter', function(e) {
+                const tooltipText = this.getAttribute('data-tooltip');
+                if (tooltipText && tooltipText !== 'No tooltip data') {
+                    tooltip.textContent = tooltipText;
+                    tooltip.classList.add('show');
+                    positionTooltip(e);
+                }
+            });
+
+            cell.addEventListener('mousemove', positionTooltip);
+
+            cell.addEventListener('mouseleave', function() {
+                tooltip.classList.remove('show');
+            });
+
+            // Also support click for touch devices
+            cell.addEventListener('click', function(e) {
+                const tooltipText = this.getAttribute('data-tooltip');
+                if (tooltipText && tooltipText !== 'No tooltip data') {
+                    tooltip.textContent = tooltipText;
+                    tooltip.classList.toggle('show');
+                    positionTooltip(e);
+                    e.stopPropagation();
+                }
+            });
+        });
+
+        // Hide tooltip when clicking elsewhere
+        document.addEventListener('click', function() {
+            tooltip.classList.remove('show');
+        });
+
+        function positionTooltip(e) {
+            const tooltipRect = tooltip.getBoundingClientRect();
+            const x = e.pageX + 15;
+            const y = e.pageY + 15;
+
+            // Adjust if tooltip goes off screen
+            const maxX = window.innerWidth + window.pageXOffset - tooltipRect.width - 20;
+            const maxY = window.innerHeight + window.pageYOffset - tooltipRect.height - 20;
+
+            tooltip.style.left = Math.min(x, maxX) + 'px';
+            tooltip.style.top = Math.min(y, maxY) + 'px';
+        }
+    </script>
 </body>
 </html>
