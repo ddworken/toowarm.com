@@ -186,8 +186,37 @@ class GameState:
         return empty
 
     def copy(self) -> 'GameState':
-        """Create a deep copy of the game state"""
-        return deepcopy(self)
+        """Create a deep copy of the game state - optimized version"""
+        new_state = GameState.__new__(GameState)  # Skip __init__
+
+        # Copy board efficiently
+        new_state.board = Board()
+        for row in range(Board.SIZE):
+            for col in range(Board.SIZE):
+                piece = self.board.grid[row][col]
+                if piece:
+                    # Create new piece with same properties
+                    new_state.board.grid[row][col] = Piece(piece.type, piece.color)
+                else:
+                    new_state.board.grid[row][col] = None
+
+        # Copy players
+        new_state.players = []
+        for player in self.players:
+            new_player = Player.__new__(Player)  # Skip __init__
+            new_player.color = player.color
+            # Copy pool - create new piece objects
+            new_player.pool = [Piece(p.type, p.color) for p in player.pool]
+            # Copy reserve - create new piece objects
+            new_player.reserve = [Piece(p.type, p.color) for p in player.reserve]
+            new_state.players.append(new_player)
+
+        # Copy simple fields
+        new_state.current_player_idx = self.current_player_idx
+        new_state.winner = self.winner
+        new_state.move_count = self.move_count
+
+        return new_state
 
 
 class BoopEngine:
