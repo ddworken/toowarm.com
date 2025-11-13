@@ -738,15 +738,10 @@ def calculate_rolling_assessment(period_date, all_night_temps):
             persistence_multiplier = 3.0
             scores[-2:] = [min(100, s * persistence_multiplier) for s in scores[-2:]]
 
-    # Apply weights: earlier days (ice building) count more than recent days
-    # This rewards sustained cold periods and recognizes ice persists through slight warming
+    # Calculate simple average - all days weighted equally
+    # Persistence bonus already handles ice buildup from earlier cold
     if len(scores) > 0:
-        # Use first N weights for N scores
-        all_weights = [1.4, 1.2, 1.1, 1.0, 1.0]  # Oldest → newest
-        weights = all_weights[:len(scores)]
-        weighted_sum = sum(score * weight for score, weight in zip(scores, weights))
-        total_weight = sum(weights)
-        avg_score = weighted_sum / total_weight if total_weight > 0 else 0.0
+        avg_score = sum(scores) / len(scores)
     else:
         avg_score = 0.0
 
