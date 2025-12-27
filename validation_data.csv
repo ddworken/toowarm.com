@@ -1,0 +1,30 @@
+# Ice Climbing Validation Data
+# Format: date,location,actual_rating,notes
+# actual_rating: excellent, good, or poor
+# Notes: Optional - describe what you observed that day
+#
+# Example entries (replace with your real data):
+# 2025-01-10,Leavenworth,poor,Ice was thin and melting
+# 2025-02-08,Leavenworth,good,Solid ice but not amazing
+# 2024-12-15,White Pine,excellent,Perfect thick ice all day
+2024-01-14,Franklin Falls,good,User confirmed good conditions
+2025-01-19,Franklin Falls,poor,User confirmed bad conditions
+2024-12-27,Franklin Falls,poor,User confirmed bad conditions
+2024-12-07,Franklin Falls,poor,User confirmed bad conditions
+2025-02-13,Franklin Falls,good,User confirmed good conditions
+2025-02-03,Franklin Falls,good,User confirmed good conditions
+2024-02-20,Franklin Falls,poor,User confirmed bad conditions
+2024-01-26,Franklin Falls,good,User confirmed good conditions
+2024-01-20,Franklin Falls,good,User confirmed good conditions
+2024-01-07,Franklin Falls,poor,User confirmed bad conditions
+2022-12-19,Franklin Falls,good,User confirmed good conditions
+2022-12-02,Franklin Falls,good,User confirmed good conditions
+2024-01-16,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-17,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-18,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-19,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-21,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-22,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-23,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-24,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
+2024-01-25,Franklin Falls,good,User confirmed good conditions (Jan 16-26 all good)
