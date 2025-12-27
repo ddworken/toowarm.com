@@ -316,49 +316,43 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
         # Need to fetch fresh data from API
         logger.info(f"Fetching avalanche forecast for zone {zone_id}, date {forecast_date}")
 
-        # API expects YYYY-MM-DD format
-        date_str = forecast_date.strftime('%Y-%m-%d')
+        # IMPORTANT: The NWAC API returns 0 products when date_start == date_end.
+        # We must query with a date range and then filter for forecasts that
+        # cover our target date.
+        date_start = (forecast_date - timedelta(days=1)).strftime('%Y-%m-%d')
+        date_end = (forecast_date + timedelta(days=1)).strftime('%Y-%m-%d')
         params = {
             'avalanche_center_id': 'NWAC',
-            'date_start': date_str,
-            'date_end': date_str
+            'date_start': date_start,
+            'date_end': date_end
         }
 
         response = requests.get(NWAC_API_URL, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
-        # Handle empty response (no forecast available)
-        if not data or len(data) == 0:
-            logger.info(f"No avalanche forecast available for zone {zone_id}, {forecast_date}")
-            # Store "no forecast" in DB
-            if cached:
-                cached.no_forecast = 1
-                cached.fetched_at = datetime.utcnow()
-            else:
-                new_record = AvalancheForecast(
-                    zone_id=zone_id,
-                    zone_name=f"Zone {zone_id}",
-                    forecast_date=forecast_date,
-                    danger_rating=None,
-                    danger_level_text='No forecast',
-                    no_forecast=1,
-                    fetched_at=datetime.utcnow()
-                )
-                session.add(new_record)
-            session.commit()
-
-            return {
-                'danger_rating': None,
-                'danger_level_text': 'No forecast',
-                'zone_name': f"Zone {zone_id}",
-                'no_forecast': True
-            }
-
-        # Find the forecast for this zone
+        # Find the forecast for this zone that covers our target date
         zone_forecast = None
+        zone_name = None
         for product in data:
             if product.get('product_type') != 'forecast':
+                continue
+
+            # Check if this forecast covers our target date
+            # Forecasts have start_date and end_date in ISO format with timezone
+            start_str = product.get('start_date', '')
+            end_str = product.get('end_date', '')
+
+            try:
+                # Parse ISO format dates (e.g., "2025-12-27T02:00:00+00:00")
+                start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                end_dt = datetime.fromisoformat(end_str.replace('Z', '+00:00'))
+
+                # Check if our target date falls within the forecast validity period
+                if not (start_dt.date() <= forecast_date <= end_dt.date()):
+                    continue
+            except (ValueError, AttributeError):
+                # If date parsing fails, skip this product
                 continue
 
             # Check if this product covers our zone
@@ -372,6 +366,7 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
             if zone_forecast:
                 break
 
+        # Handle case when no matching forecast found
         if not zone_forecast:
             logger.info(f"No forecast found for zone {zone_id} in API response")
             # Store "no forecast" in DB
