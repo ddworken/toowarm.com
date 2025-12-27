@@ -304,7 +304,8 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
             'danger_rating': None,
             'danger_level_text': 'No forecast',
             'zone_name': 'No avalanche forecast',
-            'no_forecast': True
+            'no_forecast': True,
+            'elevation_breakdown': None
         }
 
     session = get_session(DATABASE_URL)
@@ -346,7 +347,8 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                     'danger_rating': cached.danger_rating,
                     'danger_level_text': cached.danger_level_text,
                     'zone_name': cached.zone_name,
-                    'no_forecast': bool(cached.no_forecast)
+                    'no_forecast': bool(cached.no_forecast),
+                    'elevation_breakdown': None  # Not stored in cache
                 }
 
             # For current/future dates, check if cache is fresh
@@ -357,7 +359,8 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                     'danger_rating': cached.danger_rating,
                     'danger_level_text': cached.danger_level_text,
                     'zone_name': cached.zone_name,
-                    'no_forecast': bool(cached.no_forecast)
+                    'no_forecast': bool(cached.no_forecast),
+                    'elevation_breakdown': None  # Not stored in cache
                 }
 
         # Need to fetch fresh data from API
@@ -438,10 +441,14 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                 'danger_rating': None,
                 'danger_level_text': 'No forecast',
                 'zone_name': f"Zone {zone_id}",
-                'no_forecast': True
+                'no_forecast': True,
+                'elevation_breakdown': None
             }
 
         # Extract danger rating (elevation-aware if elevation is provided)
+        # Also extract full elevation breakdown for tooltip
+        elevation_breakdown = None
+
         if location_elevation_ft is not None:
             # Use elevation-specific danger rating
             # Parse the forecast validity period to determine current vs tomorrow
@@ -470,6 +477,33 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                     for danger_entry in danger_array:
                         if danger_entry.get('valid_day') == valid_day:
                             danger_rating = danger_entry.get(elevation_band, -1)
+
+                            # Also extract full breakdown for tooltip
+                            danger_level_map = {
+                                1: 'Low',
+                                2: 'Moderate',
+                                3: 'Considerable',
+                                4: 'High',
+                                5: 'Extreme',
+                                -1: 'No rating'
+                            }
+                            elevation_breakdown = {
+                                'lower': {
+                                    'rating': danger_entry.get('lower', -1),
+                                    'text': danger_level_map.get(danger_entry.get('lower', -1), 'Unknown'),
+                                    'is_current': elevation_band == 'lower'
+                                },
+                                'middle': {
+                                    'rating': danger_entry.get('middle', -1),
+                                    'text': danger_level_map.get(danger_entry.get('middle', -1), 'Unknown'),
+                                    'is_current': elevation_band == 'middle'
+                                },
+                                'upper': {
+                                    'rating': danger_entry.get('upper', -1),
+                                    'text': danger_level_map.get(danger_entry.get('upper', -1), 'Unknown'),
+                                    'is_current': elevation_band == 'upper'
+                                }
+                            }
                             break
 
                 # If we didn't find a specific rating, fall back to overall
@@ -477,7 +511,7 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                     danger_rating = zone_forecast.get('danger_rating', -1)
 
                 # Convert rating number to text
-                danger_level_map = {
+                danger_level_map_lower = {
                     1: 'low',
                     2: 'moderate',
                     3: 'considerable',
@@ -485,7 +519,7 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                     5: 'extreme',
                     -1: 'no rating'
                 }
-                danger_level_text = danger_level_map.get(danger_rating, 'unknown')
+                danger_level_text = danger_level_map_lower.get(danger_rating, 'unknown')
 
                 logger.info(f"Elevation-aware rating for zone {zone_id} on {forecast_date}: "
                            f"{elevation_band} band ({location_elevation_ft} ft) = {danger_rating} ({danger_level_text})")
@@ -536,7 +570,8 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
             'danger_rating': danger_rating,
             'danger_level_text': danger_level_text,
             'zone_name': zone_name,
-            'no_forecast': False
+            'no_forecast': False,
+            'elevation_breakdown': elevation_breakdown
         }
 
     except requests.exceptions.RequestException as e:
@@ -547,13 +582,15 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                 'danger_rating': cached.danger_rating,
                 'danger_level_text': cached.danger_level_text,
                 'zone_name': cached.zone_name,
-                'no_forecast': bool(cached.no_forecast)
+                'no_forecast': bool(cached.no_forecast),
+                'elevation_breakdown': None
             }
         return {
             'danger_rating': None,
             'danger_level_text': 'Error',
             'zone_name': f"Zone {zone_id}",
-            'no_forecast': True
+            'no_forecast': True,
+            'elevation_breakdown': None
         }
     except Exception as e:
         logger.error(f"Unexpected error fetching avalanche forecast: {e}")
@@ -562,13 +599,15 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                 'danger_rating': cached.danger_rating,
                 'danger_level_text': cached.danger_level_text,
                 'zone_name': cached.zone_name,
-                'no_forecast': bool(cached.no_forecast)
+                'no_forecast': bool(cached.no_forecast),
+                'elevation_breakdown': None
             }
         return {
             'danger_rating': None,
             'danger_level_text': 'Error',
             'zone_name': f"Zone {zone_id}",
-            'no_forecast': True
+            'no_forecast': True,
+            'elevation_breakdown': None
         }
     finally:
         session.close()
@@ -2153,7 +2192,8 @@ def get_location_data(location_name, days=7):
                     'factors': rolling_assessment.get('factors', []),
                     'avalanche_danger': avalanche_data['danger_level_text'],
                     'avalanche_rating': avalanche_data['danger_rating'],
-                    'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating'])
+                    'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating']),
+                    'avalanche_elevation_breakdown': avalanche_data.get('elevation_breakdown')
                 })
 
         # Get future forecast (latest fetch)
@@ -2218,7 +2258,8 @@ def get_location_data(location_name, days=7):
                     'factors': rolling_assessment.get('factors', []),
                     'avalanche_danger': avalanche_data['danger_level_text'],
                     'avalanche_rating': avalanche_data['danger_rating'],
-                    'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating'])
+                    'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating']),
+                    'avalanche_elevation_breakdown': avalanche_data.get('elevation_breakdown')
                 })
 
         return all_periods

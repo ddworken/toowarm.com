@@ -457,7 +457,10 @@
                         <td class="score-cell {{ period.forecast_color }}" style="cursor: help;" data-tooltip="{{ period.detailed_forecast }}">
                             {{ period.short_forecast }}
                         </td>
-                        <td class="{{ period.avalanche_color }}">
+                        <td class="score-cell {{ period.avalanche_color }}" style="cursor: help;" {% if period.avalanche_elevation_breakdown %}data-tooltip="Avalanche Danger by Elevation:
+Lower (<3000 ft): {{ period.avalanche_elevation_breakdown.lower.text }} ({{ period.avalanche_elevation_breakdown.lower.rating }}){% if period.avalanche_elevation_breakdown.lower.is_current %} (this){% endif %}
+Middle (3000-5000 ft): {{ period.avalanche_elevation_breakdown.middle.text }} ({{ period.avalanche_elevation_breakdown.middle.rating }}){% if period.avalanche_elevation_breakdown.middle.is_current %} (this){% endif %}
+Upper (>5000 ft): {{ period.avalanche_elevation_breakdown.upper.text }} ({{ period.avalanche_elevation_breakdown.upper.rating }}){% if period.avalanche_elevation_breakdown.upper.is_current %} (this){% endif %}"{% endif %}>
                             {% if period.avalanche_rating == 1 %}
                                 <img src="{{ url_for('static', filename='img/avalanche-1-low.png') }}" alt="Low" title="Low avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
                             {% elif period.avalanche_rating == 2 %}
