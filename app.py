@@ -638,7 +638,7 @@ def check_hard_constraints(periods):
     day_periods = [p for p in periods if 'night' not in p.get('period_name', '').lower()]
     if len(day_periods) >= 3:
         consecutive_warm = 0
-        for period in day_periods[:5]:  # Check up to 5 days
+        for period in day_periods[:7]:  # Check up to 7 days
             if period.get('temperature', 0) > 35:
                 consecutive_warm += 1
                 if consecutive_warm >= 3:
@@ -667,16 +667,17 @@ def check_hard_constraints(periods):
 
 def calculate_temperature_score(periods):
     """
-    Calculate temperature score (0-70 points) based on 5-day temp patterns.
+    Calculate temperature score (-10 to 70 points) based on 7-day temp patterns.
 
     Nighttime lows weighted 70%, daytime highs weighted 30%.
     Considers both average temperatures and consistency.
+    Can return negative scores when temps are too warm for ice formation.
 
     Args:
         periods: List of period dictionaries with 'temperature' and 'period_name'
 
     Returns:
-        tuple: (score, explanation) where score is 0-70 and explanation is human-readable
+        tuple: (score, explanation) where score is -10 to 70 and explanation is human-readable
     """
     if not periods or len(periods) == 0:
         return (0, "No temperature data")
@@ -727,8 +728,8 @@ def calculate_temperature_score(periods):
             base_score = 15
             explanation = f"Very warm temps: avg night {avg_night:.0f}°F, day {avg_day:.0f}°F"
         else:
-            # Very warm - minimal score
-            base_score = max(0, 10 - (weighted_avg - 40) * 0.5)
+            # Very warm - negative score (penalty for being too warm for ice)
+            base_score = max(-10, -(weighted_avg - 40) * 0.5)
             explanation = f"Too warm for ice: avg night {avg_night:.0f}°F, day {avg_day:.0f}°F"
 
     # Apply consistency penalty
@@ -754,9 +755,9 @@ def calculate_temperature_score(periods):
 
 def calculate_precipitation_penalty(periods):
     """
-    Calculate precipitation penalty based on rain in the past 5 days.
+    Calculate precipitation penalty based on rain in the past 7 days.
 
-    - Rain in past 5 days (excluding yesterday): -10 pts per day
+    - Rain in past 7 days (excluding yesterday): -10 pts per day
     - Fresh snow: no change (0 pts)
     - Mixed conditions: no change (0 pts)
     - Rain yesterday is handled by hard constraints
@@ -775,8 +776,8 @@ def calculate_precipitation_penalty(periods):
     rain_days = 0
 
     # Skip index 0 (today) and 1 (yesterday) - these are handled by hard constraints
-    # Check days 2-6 (past 5 days excluding yesterday)
-    for i in range(2, min(len(periods), 12)):  # Check up to 12 periods (6 days of day/night)
+    # Check days 2-8 (past 7 days excluding yesterday)
+    for i in range(2, min(len(periods), 16)):  # Check up to 16 periods (8 days of day/night)
         forecast = periods[i].get('short_forecast', '').lower()
 
         # Check for rain (but not mixed with snow)
@@ -785,56 +786,64 @@ def calculate_precipitation_penalty(periods):
             rain_days += 1
 
     if rain_days == 0:
-        explanation = "No rain in past 5 days"
+        explanation = "No rain in past 7 days"
     elif rain_days == 1:
-        explanation = "Rain on 1 day in past 5 days"
+        explanation = "Rain on 1 day in past 7 days"
     else:
-        explanation = f"Rain on {rain_days} days in past 5 days"
+        explanation = f"Rain on {rain_days} days in past 7 days"
 
     return (penalty, explanation)
 
 
 def calculate_wind_score(periods):
     """
-    Calculate wind score (0-15 points) based on recent wind conditions.
+    Calculate wind score (-8 to +5 points) based on recent wind conditions.
 
-    - Calm (≤5 mph): 15 pts
-    - Light (6-10 mph): 12 pts
-    - Moderate (11-15 mph): 8 pts
-    - Windy (>15 mph): 3 pts
+    Calm winds provide minimal bonus, but high winds cause significant penalties.
+
+    - Calm (≤5 mph): 5 pts
+    - Light (6-10 mph): 4 pts
+    - Moderate (11-15 mph): 2 pts
+    - Moderate-high (16-20 mph): -3 pts (penalty)
+    - Windy (21-25 mph): -5 pts (penalty)
+    - Very windy (>25 mph): -8 pts (strong penalty)
 
     Args:
         periods: List of period dictionaries with 'wind_speed' (parsed as int)
 
     Returns:
-        tuple: (score, explanation) where score is 0-15
+        tuple: (score, explanation) where score is -8 to 5
     """
     if not periods or len(periods) == 0:
-        return (8, "No wind data")  # Default middle score if no data
+        return (2, "No wind data")  # Default middle score if no data
 
     # Get average wind speed from recent periods
     wind_speeds = [p.get('wind_speed', 0) for p in periods if p.get('wind_speed') is not None]
 
     if not wind_speeds:
-        return (8, "No wind data")  # Default middle score
+        return (2, "No wind data")  # Default middle score
 
     avg_wind = sum(wind_speeds) / len(wind_speeds)
 
     if avg_wind <= 5:
-        return (15, f"Calm winds (avg {avg_wind:.0f} mph)")
+        return (5, f"Calm winds (avg {avg_wind:.0f} mph)")
     elif avg_wind <= 10:
-        return (12, f"Light winds (avg {avg_wind:.0f} mph)")
+        return (4, f"Light winds (avg {avg_wind:.0f} mph)")
     elif avg_wind <= 15:
-        return (8, f"Moderate winds (avg {avg_wind:.0f} mph)")
+        return (2, f"Moderate winds (avg {avg_wind:.0f} mph)")
+    elif avg_wind <= 20:
+        return (-3, f"Moderate-high winds (avg {avg_wind:.0f} mph)")
+    elif avg_wind <= 25:
+        return (-5, f"Windy conditions (avg {avg_wind:.0f} mph)")
     else:
-        return (3, f"Windy conditions (avg {avg_wind:.0f} mph)")
+        return (-8, f"Very windy conditions (avg {avg_wind:.0f} mph)")
 
 
 def calculate_trend_bonus(periods):
     """
     Calculate temperature trend bonus/penalty based on whether temps are cooling or warming.
 
-    - Cooling trend over 5 days: +10 to +15 pts
+    - Cooling trend over 7 days: +10 to +15 pts
     - Stable temps: 0 pts
     - Warming trend: -5 to -10 pts
 
@@ -899,7 +908,7 @@ def assess_ice_conditions(periods):
     Args:
         periods: List of period dictionaries with temperature, wind, forecast data
                  Should be sorted with most recent period first (index 0)
-                 Should cover at least 5 days of data
+                 Should cover at least 7 days of data
 
     Returns:
         dict: {
@@ -917,31 +926,30 @@ def assess_ice_conditions(periods):
             'breakdown': {}
         }
 
-    # Check hard constraints first
-    constraint_violation = check_hard_constraints(periods)
-    if constraint_violation:
-        return {
-            'score': constraint_violation['score'],
-            'color': constraint_violation['color'],
-            'status': constraint_violation['reason'],
-            'breakdown': {
-                'constraint_violation': constraint_violation['reason']
-            },
-            'factors': [constraint_violation['reason']]
-        }
-
-    # Calculate score components (now returning tuples with explanations)
+    # Calculate score components first (always run the sophisticated algorithm)
     temp_score, temp_explanation = calculate_temperature_score(periods)
     precip_penalty, precip_explanation = calculate_precipitation_penalty(periods)
     wind_score, wind_explanation = calculate_wind_score(periods)
     trend_bonus, trend_explanation = calculate_trend_bonus(periods)
 
-    # Calculate final score (can exceed 100 or go below 0, so we'll clamp)
+    # Calculate raw score
     raw_score = temp_score + precip_penalty + wind_score + trend_bonus
-    final_score = max(0, min(100, raw_score))
+
+    # Check hard constraints and apply as score caps
+    constraint_violation = check_hard_constraints(periods)
+    if constraint_violation:
+        # Cap the score at the constraint limit, but allow it to go lower if conditions warrant
+        final_score = min(constraint_violation['score'], max(0, raw_score))
+    else:
+        # No constraint - use normal score
+        final_score = max(0, min(100, raw_score))
 
     # Build human-readable factors list
     factors = []
+
+    # Add constraint reason first if present
+    if constraint_violation:
+        factors.append(f"⚠️  {constraint_violation['reason']} (score capped at {constraint_violation['score']})")
 
     # Add factors sorted by absolute impact (largest first)
     components = [
@@ -964,8 +972,10 @@ def assess_ice_conditions(periods):
     # Generate color from score
     color = get_color_for_score(final_score)
 
-    # Generate status text based on score
-    if final_score >= 80:
+    # Generate status text based on score (or use constraint reason if worse)
+    if constraint_violation and final_score <= constraint_violation['score']:
+        status = constraint_violation['reason']
+    elif final_score >= 80:
         status = 'Excellent ice climbing conditions'
     elif final_score >= 65:
         status = 'Good ice climbing conditions'
@@ -1135,7 +1145,7 @@ def get_avalanche_color(danger_level_text, danger_rating):
 
 def calculate_rolling_assessment(period_date, all_night_temps, all_periods_data=None):
     """
-    Calculate rolling 5-day assessment for a specific date using sophisticated scoring.
+    Calculate rolling 7-day assessment for a specific date using sophisticated scoring.
 
     Args:
         period_date: The datetime to assess
@@ -1202,7 +1212,7 @@ def calculate_rolling_assessment(period_date, all_night_temps, all_periods_data=
         }
 
     # Fallback to legacy simple assessment if no full period data provided
-    # Filter to temps in the 5-day window before this period
+    # Filter to temps in the 7-day window before this period
     relevant_temps = [
         temp for date, temp in all_night_temps
         if cutoff_date <= date < period_date
@@ -1229,7 +1239,13 @@ def calculate_rolling_assessment(period_date, all_night_temps, all_periods_data=
         0 = no ice formation possible
 
         Uses smooth exponential decay - no harsh penalties for being 1°F over.
+        Caps extremely cold temps (< 0°F) to avoid over-valuing brutal conditions.
         """
+        # Cap extremely cold temps at 0°F equivalent - diminishing returns
+        # Temps below 0°F don't make ice better, might make it brittle
+        if temp < 0:
+            temp = 0
+
         if temp <= 0:
             return 100.0
         elif temp >= 40:
@@ -1245,14 +1261,20 @@ def calculate_rolling_assessment(period_date, all_night_temps, all_periods_data=
     # Ice builds up over time, so sustained cold is more valuable than sporadic cold
     scores = [score_temperature(temp) for temp in relevant_temps]
 
-    # Apply persistence bonus: if there was recent cold that built ice, later warmer days get a boost
-    # This recognizes that ice persists through slight warming after a cold spell
+    # Apply persistence bonus: if there was sustained cold that built ice,
+    # later warmer days get a boost. This recognizes that ice persists
+    # through slight warming after a cold spell.
+    # Stronger boost when there was VERY strong early cold (indicating robust ice formation)
     if len(scores) >= 4:
-        # Check if the first 3 days had decent cold temps (indicating ice building)
+        # Check if the first 3 days had cold temps (indicating ice building)
         early_days_avg = sum(scores[:3]) / 3
-        if early_days_avg >= 30:  # Moderate cold = ice was building
-            # Apply boost to last 2 days (triple the score for ice persistence)
-            persistence_multiplier = 3.0
+        if early_days_avg >= 70:  # Very strong cold = robust ice was building
+            # Apply strong boost to last 2 days (2.5x multiplier for robust ice persistence)
+            persistence_multiplier = 2.5
+            scores[-2:] = [min(100, s * persistence_multiplier) for s in scores[-2:]]
+        elif early_days_avg >= 50:  # Good cold = ice was building
+            # Apply moderate boost to last 2 days (2.0x multiplier for ice persistence)
+            persistence_multiplier = 2.0
             scores[-2:] = [min(100, s * persistence_multiplier) for s in scores[-2:]]
 
     # Calculate simple average - all days weighted equally
@@ -1262,20 +1284,38 @@ def calculate_rolling_assessment(period_date, all_night_temps, all_periods_data=
     else:
         avg_score = 0.0
 
+    # Apply variance penalty for unstable temperatures (melt/refreeze cycles)
+    if len(relevant_temps) >= 3:
+        temp_variance = max(relevant_temps) - min(relevant_temps)
+        if temp_variance > 20:
+            # High variance - significant penalty
+            avg_score *= 0.75
+        elif temp_variance > 15:
+            # Moderate-high variance
+            avg_score *= 0.85
+        elif temp_variance > 10:
+            # Moderate variance
+            avg_score *= 0.92
+
+    # Apply penalty for sustained extreme cold (all temps ≤ 5°F)
+    # Extremely cold temps for extended periods may make ice brittle or climbing unpleasant
+    if len(relevant_temps) >= 3 and all(t <= 5 for t in relevant_temps):
+        avg_score *= 0.80  # 20% penalty for sustained extreme cold
+
     # Classify based on average score (smooth thresholds)
     # Tuned based on validation data - excellent very rare (95), good at 40+
     if avg_score >= 95:
         status = 'excellent'
         color = 'assessment-excellent'
-        message = f'Past 5 days: excellent ice (score: {avg_score:.0f}/100, min: {min(relevant_temps)}°F)'
+        message = f'Past 7 days: excellent ice (score: {avg_score:.0f}/100, min: {min(relevant_temps)}°F)'
     elif avg_score >= 40:
         status = 'good'
         color = 'assessment-good'
-        message = f'Past 5 days: good ice (score: {avg_score:.0f}/100, range: {min(relevant_temps)}-{max(relevant_temps)}°F)'
+        message = f'Past 7 days: good ice (score: {avg_score:.0f}/100, range: {min(relevant_temps)}-{max(relevant_temps)}°F)'
     else:
         status = 'poor'
         color = 'assessment-poor'
-        message = f'Past 5 days: poor ice (score: {avg_score:.0f}/100, max: {max(relevant_temps)}°F)'
+        message = f'Past 7 days: poor ice (score: {avg_score:.0f}/100, max: {max(relevant_temps)}°F)'
 
     return {
         'status': status,
