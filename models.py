@@ -54,6 +54,9 @@ class AvalancheForecast(Base):
     # Forecast date (the date this forecast is for)
     forecast_date = Column(Date, nullable=False, index=True)
 
+    # Elevation band (for elevation-specific forecasts)
+    elevation_band = Column(String(10), nullable=True, index=True)  # 'lower', 'middle', 'upper', or None for overall
+
     # Danger rating info
     danger_rating = Column(Integer, nullable=True)  # -1 for no rating, 1-5 for Low to Extreme
     danger_level_text = Column(String(50), nullable=True)  # "low", "moderate", "considerable", "high", "extreme", "no rating"

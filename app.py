@@ -254,9 +254,38 @@ def weather_collector_worker():
 # Avalanche Forecast Functions
 # ============================================================================
 
-def fetch_avalanche_forecast(zone_id, forecast_date):
+def get_elevation_band(elevation_ft):
+    """
+    Determine NWAC elevation band based on elevation.
+
+    NWAC uses three elevation bands:
+    - Lower: < 3000 ft
+    - Middle: 3000-5000 ft
+    - Upper: > 5000 ft
+
+    Args:
+        elevation_ft: Elevation in feet
+
+    Returns:
+        str: 'lower', 'middle', or 'upper'
+    """
+    if elevation_ft < 3000:
+        return 'lower'
+    elif elevation_ft < 5000:
+        return 'middle'
+    else:
+        return 'upper'
+
+
+def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None):
     """
     Fetch avalanche forecast for a specific zone and date with smart caching.
+
+    Uses elevation-aware danger ratings when location_elevation_ft is provided.
+    NWAC provides different danger ratings for different elevation bands:
+    - Lower (< 3000 ft)
+    - Middle (3000-5000 ft)
+    - Upper (> 5000 ft)
 
     Caching strategy:
     - Past dates: Cache never expires (historical data)
@@ -265,6 +294,7 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
     Args:
         zone_id: NWAC zone ID (e.g., '3' for Snoqualmie Pass)
         forecast_date: Date object for the forecast
+        location_elevation_ft: Optional elevation of location in feet for elevation-specific ratings
 
     Returns:
         dict with 'danger_rating', 'danger_level_text', 'zone_name', or None if no zone
@@ -280,13 +310,30 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
     session = get_session(DATABASE_URL)
 
     try:
-        # Check if we have cached data
-        cached = session.query(AvalancheForecast).filter(
-            and_(
-                AvalancheForecast.zone_id == zone_id,
-                AvalancheForecast.forecast_date == forecast_date
-            )
-        ).first()
+        # Determine elevation band for cache lookup
+        if location_elevation_ft is not None:
+            elevation_band = get_elevation_band(location_elevation_ft)
+        else:
+            elevation_band = None
+
+        # Check if we have cached data (including elevation band if specified)
+        if elevation_band:
+            cached = session.query(AvalancheForecast).filter(
+                and_(
+                    AvalancheForecast.zone_id == zone_id,
+                    AvalancheForecast.forecast_date == forecast_date,
+                    AvalancheForecast.elevation_band == elevation_band
+                )
+            ).first()
+        else:
+            # No elevation specified, look for overall rating (elevation_band = None)
+            cached = session.query(AvalancheForecast).filter(
+                and_(
+                    AvalancheForecast.zone_id == zone_id,
+                    AvalancheForecast.forecast_date == forecast_date,
+                    AvalancheForecast.elevation_band.is_(None)
+                )
+            ).first()
 
         today = date.today()
 
@@ -378,6 +425,7 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
                     zone_id=zone_id,
                     zone_name=f"Zone {zone_id}",
                     forecast_date=forecast_date,
+                    elevation_band=elevation_band if location_elevation_ft else None,
                     danger_rating=None,
                     danger_level_text='No forecast',
                     no_forecast=1,
@@ -393,15 +441,71 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
                 'no_forecast': True
             }
 
-        # Extract danger rating
-        danger_rating = zone_forecast.get('danger_rating', -1)
-        danger_level_text = zone_forecast.get('danger_level_text', 'unknown')
+        # Extract danger rating (elevation-aware if elevation is provided)
+        if location_elevation_ft is not None:
+            # Use elevation-specific danger rating
+            # Parse the forecast validity period to determine current vs tomorrow
+            start_str = zone_forecast.get('start_date', '')
+            try:
+                start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
+                forecast_start_date = start_dt.date()
 
-        # Store or update in DB
+                # Determine which day within the forecast we're asking about
+                if forecast_date == forecast_start_date:
+                    valid_day = 'current'
+                elif forecast_date == forecast_start_date + timedelta(days=1):
+                    valid_day = 'tomorrow'
+                else:
+                    # Outside the forecast's detailed breakdown, use overall rating
+                    valid_day = None
+
+                # Get elevation band for this location
+                elevation_band = get_elevation_band(location_elevation_ft)
+
+                # Extract danger rating for this day and elevation
+                danger_rating = None
+                danger_array = zone_forecast.get('danger', [])
+
+                if valid_day:
+                    for danger_entry in danger_array:
+                        if danger_entry.get('valid_day') == valid_day:
+                            danger_rating = danger_entry.get(elevation_band, -1)
+                            break
+
+                # If we didn't find a specific rating, fall back to overall
+                if danger_rating is None:
+                    danger_rating = zone_forecast.get('danger_rating', -1)
+
+                # Convert rating number to text
+                danger_level_map = {
+                    1: 'low',
+                    2: 'moderate',
+                    3: 'considerable',
+                    4: 'high',
+                    5: 'extreme',
+                    -1: 'no rating'
+                }
+                danger_level_text = danger_level_map.get(danger_rating, 'unknown')
+
+                logger.info(f"Elevation-aware rating for zone {zone_id} on {forecast_date}: "
+                           f"{elevation_band} band ({location_elevation_ft} ft) = {danger_rating} ({danger_level_text})")
+
+            except (ValueError, AttributeError) as e:
+                # If parsing fails, fall back to overall rating
+                logger.warning(f"Failed to parse elevation-specific danger rating: {e}")
+                danger_rating = zone_forecast.get('danger_rating', -1)
+                danger_level_text = zone_forecast.get('danger_level_text', 'unknown')
+        else:
+            # No elevation provided, use overall danger rating
+            danger_rating = zone_forecast.get('danger_rating', -1)
+            danger_level_text = zone_forecast.get('danger_level_text', 'unknown')
+
+        # Store or update in DB (with elevation_band if provided)
         if cached:
             cached.danger_rating = danger_rating
             cached.danger_level_text = danger_level_text
             cached.zone_name = zone_name
+            cached.elevation_band = elevation_band if location_elevation_ft else None
             cached.no_forecast = 0
             cached.fetched_at = datetime.utcnow()
             cached.product_type = zone_forecast.get('product_type')
@@ -410,6 +514,7 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
                 zone_id=zone_id,
                 zone_name=zone_name,
                 forecast_date=forecast_date,
+                elevation_band=elevation_band if location_elevation_ft else None,
                 danger_rating=danger_rating,
                 danger_level_text=danger_level_text,
                 no_forecast=0,
@@ -419,7 +524,13 @@ def fetch_avalanche_forecast(zone_id, forecast_date):
             session.add(new_record)
 
         session.commit()
-        logger.info(f"Stored avalanche forecast: zone {zone_id} ({zone_name}), {forecast_date}, danger={danger_level_text}")
+
+        # Log with elevation band if applicable
+        if location_elevation_ft:
+            logger.info(f"Stored avalanche forecast: zone {zone_id} ({zone_name}), {forecast_date}, "
+                       f"{elevation_band} band, danger={danger_level_text}")
+        else:
+            logger.info(f"Stored avalanche forecast: zone {zone_id} ({zone_name}), {forecast_date}, danger={danger_level_text}")
 
         return {
             'danger_rating': danger_rating,
@@ -1847,9 +1958,10 @@ def get_location_data(location_name, days=7):
     """
     session = get_session(DATABASE_URL)
 
-    # Get avalanche zone for this location
+    # Get avalanche zone and elevation for this location
     location = get_location_by_name(location_name)
     avalanche_zone_id = location.get('nwac_zone_id') if location else None
+    location_elevation_ft = location.get('actual_elevation_ft') if location else None
 
     try:
         # Get enough data for context (need more than display window for rolling assessment)
@@ -2014,8 +2126,8 @@ def get_location_data(location_name, days=7):
                 period_datetime = datetime.combine(fetch_time.date(), datetime.min.time())
                 rolling_assessment = calculate_rolling_assessment(period_datetime, all_night_temps, all_periods_data)
 
-                # Fetch avalanche forecast for this date
-                avalanche_data = fetch_avalanche_forecast(avalanche_zone_id, fetch_time.date())
+                # Fetch avalanche forecast for this date (with elevation for accurate rating)
+                avalanche_data = fetch_avalanche_forecast(avalanche_zone_id, fetch_time.date(), location_elevation_ft)
 
                 all_periods.append({
                     'is_historical': True,
@@ -2079,8 +2191,8 @@ def get_location_data(location_name, days=7):
                 # Format the date for display
                 formatted_date = est_datetime.strftime('%a %m/%d')
 
-                # Fetch avalanche forecast for this date
-                avalanche_data = fetch_avalanche_forecast(avalanche_zone_id, est_datetime.date())
+                # Fetch avalanche forecast for this date (with elevation for accurate rating)
+                avalanche_data = fetch_avalanche_forecast(avalanche_zone_id, est_datetime.date(), location_elevation_ft)
 
                 all_periods.append({
                     'is_historical': False,
