@@ -462,17 +462,17 @@ Lower (<3000 ft): {{ period.avalanche_elevation_breakdown.lower.text }} ({{ peri
 Middle (3000-5000 ft): {{ period.avalanche_elevation_breakdown.middle.text }} ({{ period.avalanche_elevation_breakdown.middle.rating }}){% if period.avalanche_elevation_breakdown.middle.is_current %} (this){% endif %}
 Upper (>5000 ft): {{ period.avalanche_elevation_breakdown.upper.text }} ({{ period.avalanche_elevation_breakdown.upper.rating }}){% if period.avalanche_elevation_breakdown.upper.is_current %} (this){% endif %}"{% endif %}>
                             {% if period.avalanche_rating == 1 %}
-                                <img src="{{ url_for('static', filename='img/avalanche-1-low.png') }}" alt="Low" title="Low avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                                <img src="{{ url_for('static', filename='img/avalanche-1-low.png') }}" alt="Low" style="height: 50px; display: block; margin: 0 auto; pointer-events: none;">
                             {% elif period.avalanche_rating == 2 %}
-                                <img src="{{ url_for('static', filename='img/avalanche-2-moderate.png') }}" alt="Moderate" title="Moderate avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                                <img src="{{ url_for('static', filename='img/avalanche-2-moderate.png') }}" alt="Moderate" style="height: 50px; display: block; margin: 0 auto; pointer-events: none;">
                             {% elif period.avalanche_rating == 3 %}
-                                <img src="{{ url_for('static', filename='img/avalanche-3-considerable.png') }}" alt="Considerable" title="Considerable avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                                <img src="{{ url_for('static', filename='img/avalanche-3-considerable.png') }}" alt="Considerable" style="height: 50px; display: block; margin: 0 auto; pointer-events: none;">
                             {% elif period.avalanche_rating == 4 %}
-                                <img src="{{ url_for('static', filename='img/avalanche-4-high.png') }}" alt="High" title="High avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                                <img src="{{ url_for('static', filename='img/avalanche-4-high.png') }}" alt="High" style="height: 50px; display: block; margin: 0 auto; pointer-events: none;">
                             {% elif period.avalanche_rating == 5 %}
-                                <img src="{{ url_for('static', filename='img/avalanche-5-extreme.png') }}" alt="Extreme" title="Extreme avalanche danger" style="height: 50px; display: block; margin: 0 auto;">
+                                <img src="{{ url_for('static', filename='img/avalanche-5-extreme.png') }}" alt="Extreme" style="height: 50px; display: block; margin: 0 auto; pointer-events: none;">
                             {% else %}
-                                <img src="{{ url_for('static', filename='img/avalanche-none.svg') }}" alt="{{ period.avalanche_danger }}" title="{{ period.avalanche_danger }}" style="height: 50px; display: block; margin: 0 auto;">
+                                <img src="{{ url_for('static', filename='img/avalanche-none.svg') }}" alt="{{ period.avalanche_danger }}" style="height: 50px; display: block; margin: 0 auto; pointer-events: none;">
                             {% endif %}
                         </td>
                     </tr>

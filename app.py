@@ -338,8 +338,9 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
 
         today = date.today()
 
-        # If we have cached data
-        if cached:
+        # If we have cached data and DON'T need elevation breakdown, use cache
+        # (If location_elevation_ft is provided, we need to fetch to get full breakdown for tooltip)
+        if cached and location_elevation_ft is None:
             # For past dates, cache never expires
             if forecast_date < today:
                 logger.debug(f"Using cached historical avalanche data for zone {zone_id}, {forecast_date}")
@@ -363,8 +364,12 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None)
                     'elevation_breakdown': None  # Not stored in cache
                 }
 
-        # Need to fetch fresh data from API
-        logger.info(f"Fetching avalanche forecast for zone {zone_id}, date {forecast_date}")
+        # When location_elevation_ft is provided, we always fetch from API to get full elevation breakdown
+        # This ensures the tooltip has complete data even if we have a cached rating
+        if location_elevation_ft is not None:
+            logger.debug(f"Fetching from API to get elevation breakdown for zone {zone_id}, {forecast_date}")
+        else:
+            logger.info(f"Fetching avalanche forecast for zone {zone_id}, date {forecast_date}")
 
         # IMPORTANT: The NWAC API returns 0 products when date_start == date_end.
         # We must query with a date range and then filter for forecasts that
