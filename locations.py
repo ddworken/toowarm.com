@@ -1,11 +1,11 @@
 """
 Configuration for ice climbing locations to monitor.
 
-Elevation data includes:
-- nws_grid_elevation_ft: Elevation of the NWS forecast grid cell
-- actual_elevation_ft: Actual climbing site elevation from Mountain Project
-- elevation_note: Additional context about the elevation
+Locations are loaded from locations.yaml in the repo root.
 """
+
+import os
+import yaml
 
 # Elevation correction configuration
 ELEVATION_CONFIG = {
@@ -15,93 +15,39 @@ ELEVATION_CONFIG = {
     'climate_type': 'humid_maritime',  # For documentation
 }
 
-LOCATIONS = [
-    {
-        'name': 'Franklin Falls',
-        'latitude': 47.4254,
-        'longitude': -121.4320,
-        'description': 'Popular waterfall ice climb near Snoqualmie Pass',
-        'nws_grid_elevation_ft': 3983,
-        'actual_elevation_ft': 2542,
-        'elevation_note': 'Waterfall base elevation; NWS grid is 1,441 ft higher',
-        'nwac_zone_id': '3',
-        'nwac_zone_name': 'Snoqualmie Pass',
-        'links': [
-            {'name': 'Mountain Project', 'url': 'https://www.mountainproject.com/area/117973219/franklin-falls'},
-            {'name': 'AllTrails', 'url': 'https://www.alltrails.com/trail/us/washington/franklin-falls-trail'}
-        ]
-    },
-    {
-        'name': 'Exit 38',
-        'latitude': 47.4317,
-        'longitude': -121.6320,
-        'description': 'Ice climbing area off I-90 Exit 38 near North Bend',
-        'nws_grid_elevation_ft': 2575,
-        'actual_elevation_ft': 1186,
-        'elevation_note': 'Main climbing area elevation; NWS grid is 1,389 ft higher',
-        'nwac_zone_id': '3',
-        'nwac_zone_name': 'Snoqualmie Pass',
-        'links': [
-            {'name': 'Mountain Project', 'url': 'https://www.mountainproject.com/area/120086752/dry-tooling-ice-climbing-at-exit-38'}
-        ]
-    },
-    {
-        'name': 'Alpental',
-        'latitude': 47.4432,
-        'longitude': -121.4295,
-        'description': 'Ski area with ice climbing opportunities near Snoqualmie Pass',
-        'nws_grid_elevation_ft': 4862,
-        'actual_elevation_ft': 3100,
-        'elevation_note': 'Base/parking area elevation; NWS grid is 1,762 ft higher',
-        'nwac_zone_id': '3',
-        'nwac_zone_name': 'Snoqualmie Pass',
-        'links': [
-            {'name': 'Mountain Project', 'url': 'https://www.mountainproject.com/route-finder?selectedIds=108471741&type=ice&diffMinrock=1400&diffMinboulder=20000&diffMinaid=70000&diffMinice=30000&diffMinmixed=50000&diffMaxrock=4800&diffMaxboulder=20050&diffMaxaid=75260&diffMaxice=38500&diffMaxmixed=65050&is_trad_climb=1&is_sport_climb=1&is_top_rope=1&stars=0&pitches=0&sort1=area&sort2=rating'}
-        ]
-    },
-    {
-        'name': 'Leavenworth',
-        'latitude': 47.5962,
-        'longitude': -120.6615,
-        'description': 'Icicle Creek area ice climbing near Leavenworth',
-        'nws_grid_elevation_ft': 1198,
-        'actual_elevation_ft': 1965,
-        'elevation_note': 'Icicle Creek ice climbing area; climbing sites are 767 ft higher than NWS grid',
-        'nwac_zone_id': '8',
-        'nwac_zone_name': 'East Slopes Central',
-        'links': [
-            {'name': 'Mountain Project', 'url': 'https://www.mountainproject.com/area/120322449/ice-climbing-in-icicle-creek'}
-        ]
-    },
-    {
-        'name': 'White Pine',
-        'latitude': 47.78284,
-        'longitude': -120.87577,
-        'description': 'Ice climbing location in the Cascades',
-        'nws_grid_elevation_ft': 2451,
-        'actual_elevation_ft': 2319,
-        'elevation_note': 'Ice climbing area elevation; minimal difference from NWS grid (132 ft lower)',
-        'nwac_zone_id': '2',
-        'nwac_zone_name': 'Stevens Pass',
-        'links': [
-            {'name': 'Mountain Project', 'url': 'https://www.mountainproject.com/area/120310945/whitepine-ice-mixed'}
-        ]
-    },
-    {
-        'name': 'Banks Lake',
-        'latitude': 47.81441,
-        'longitude': -119.1536,
-        'description': 'Ice climbing area in Eastern Washington',
-        'nws_grid_elevation_ft': 1581,
-        'actual_elevation_ft': 2224,
-        'elevation_note': 'Climbing area elevation; sites are 643 ft higher than NWS grid',
-        'nwac_zone_id': None,
-        'nwac_zone_name': None,
-        'links': [
-            {'name': 'Mountain Project', 'url': 'https://www.mountainproject.com/area/116630932/banks-lake-ice-climbing'}
-        ]
-    }
-]
+def _load_locations():
+    """Load locations from YAML file."""
+    yaml_path = os.path.join(os.path.dirname(__file__), 'locations.yaml')
+    with open(yaml_path, 'r') as f:
+        data = yaml.safe_load(f)
+
+    locations = []
+    for loc in data['locations']:
+        # Transform YAML format to internal format
+        elevation_diff = loc['nws_grid_elevation_ft'] - loc['elevation_ft']
+        if elevation_diff > 0:
+            elevation_note = f"NWS grid is {elevation_diff:,} ft higher than climbing area"
+        elif elevation_diff < 0:
+            elevation_note = f"Climbing area is {-elevation_diff:,} ft higher than NWS grid"
+        else:
+            elevation_note = "NWS grid matches climbing area elevation"
+
+        locations.append({
+            'name': loc['name'],
+            'description': loc.get('description', f"Ice climbing near {loc['nwac_zone_name'] or loc['name']}"),
+            'latitude': loc['latitude'],
+            'longitude': loc['longitude'],
+            'actual_elevation_ft': loc['elevation_ft'],
+            'nws_grid_elevation_ft': loc['nws_grid_elevation_ft'],
+            'elevation_note': elevation_note,
+            'nwac_zone_id': loc['nwac_zone_id'],
+            'nwac_zone_name': loc['nwac_zone_name'],
+            'links': [{'name': 'Mountain Project', 'url': loc['mountain_project_url']}] if loc.get('mountain_project_url') else []
+        })
+
+    return locations
+
+LOCATIONS = _load_locations()
 
 
 def get_location_by_name(name):

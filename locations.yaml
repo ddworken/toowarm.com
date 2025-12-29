@@ -1,0 +1,60 @@
+locations:
+  - name: Franklin Falls
+    description: Popular waterfall ice climb near Snoqualmie Pass
+    latitude: 47.4254
+    longitude: -121.4320
+    elevation_ft: 2542
+    nws_grid_elevation_ft: 3983
+    nwac_zone_id: "3"
+    nwac_zone_name: Snoqualmie Pass
+    mountain_project_url: https://www.mountainproject.com/area/117973219/franklin-falls
+
+  - name: Exit 38
+    description: Ice climbing area off I-90 Exit 38 near North Bend
+    latitude: 47.4317
+    longitude: -121.6320
+    elevation_ft: 1186
+    nws_grid_elevation_ft: 2575
+    nwac_zone_id: "3"
+    nwac_zone_name: Snoqualmie Pass
+    mountain_project_url: https://www.mountainproject.com/area/120086752/dry-tooling-ice-climbing-at-exit-38
+
+  - name: Alpental
+    description: Ski area with ice climbing opportunities near Snoqualmie Pass
+    latitude: 47.4432
+    longitude: -121.4295
+    elevation_ft: 3100
+    nws_grid_elevation_ft: 4862
+    nwac_zone_id: "3"
+    nwac_zone_name: Snoqualmie Pass
+    mountain_project_url: https://www.mountainproject.com/route-finder?selectedIds=108471741&type=ice&diffMinrock=1400&diffMinboulder=20000&diffMinaid=70000&diffMinice=30000&diffMinmixed=50000&diffMaxrock=4800&diffMaxboulder=20050&diffMaxaid=75260&diffMaxice=38500&diffMaxmixed=65050&is_trad_climb=1&is_sport_climb=1&is_top_rope=1&stars=0&pitches=0&sort1=area&sort2=rating
+
+  - name: Leavenworth
+    description: Icicle Creek area ice climbing near Leavenworth
+    latitude: 47.5962
+    longitude: -120.6615
+    elevation_ft: 1965
+    nws_grid_elevation_ft: 1198
+    nwac_zone_id: "8"
+    nwac_zone_name: East Slopes Central
+    mountain_project_url: https://www.mountainproject.com/area/120322449/ice-climbing-in-icicle-creek
+
+  - name: White Pine
+    description: Ice climbing location near Stevens Pass
+    latitude: 47.78284
+    longitude: -120.87577
+    elevation_ft: 2319
+    nws_grid_elevation_ft: 2451
+    nwac_zone_id: "2"
+    nwac_zone_name: Stevens Pass
+    mountain_project_url: https://www.mountainproject.com/area/120310945/whitepine-ice-mixed
+
+  - name: Banks Lake
+    description: Ice climbing area in Eastern Washington
+    latitude: 47.81441
+    longitude: -119.1536
+    elevation_ft: 2224
+    nws_grid_elevation_ft: 1581
+    nwac_zone_id: null
+    nwac_zone_name: null
+    mountain_project_url: https://www.mountainproject.com/area/116630932/banks-lake-ice-climbing

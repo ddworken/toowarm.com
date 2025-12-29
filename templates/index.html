@@ -460,7 +460,7 @@
                         <td class="score-cell {{ period.avalanche_color }}" style="cursor: help;" {% if period.avalanche_elevation_breakdown %}data-tooltip="Avalanche Danger by Elevation:
 Lower (<3000 ft): {{ period.avalanche_elevation_breakdown.lower.text }} ({{ period.avalanche_elevation_breakdown.lower.rating }}){% if period.avalanche_elevation_breakdown.lower.is_current %} (this){% endif %}
 Middle (3000-5000 ft): {{ period.avalanche_elevation_breakdown.middle.text }} ({{ period.avalanche_elevation_breakdown.middle.rating }}){% if period.avalanche_elevation_breakdown.middle.is_current %} (this){% endif %}
-Upper (>5000 ft): {{ period.avalanche_elevation_breakdown.upper.text }} ({{ period.avalanche_elevation_breakdown.upper.rating }}){% if period.avalanche_elevation_breakdown.upper.is_current %} (this){% endif %}"{% endif %}>
+Upper (>5000 ft): {{ period.avalanche_elevation_breakdown.upper.text }} ({{ period.avalanche_elevation_breakdown.upper.rating }}){% if period.avalanche_elevation_breakdown.upper.is_current %} (this){% endif %}"{% else %}data-tooltip="No avalanche forecast"{% endif %}>
                             {% if period.avalanche_rating == 1 %}
                                 <img src="{{ url_for('static', filename='img/avalanche-1-low.png') }}" alt="Low" style="height: 50px; display: block; margin: 0 auto; pointer-events: none;">
                             {% elif period.avalanche_rating == 2 %}
@@ -600,7 +600,8 @@ Upper (>5000 ft): {{ period.avalanche_elevation_breakdown.upper.text }} ({{ peri
 
         <footer>
             <p>📊 Historical data shows actual conditions | Future periods show NWS forecast</p>
-            <p>Weather data from the National Weather Service API</p>
+            <p>Weather data from the <a href="https://www.weather.gov/" target="_blank">National Weather Service API</a></p>
+            <p>Avalanche data from the <a href="https://nwac.us/" target="_blank">Northwest Avalanche Center (NWAC)</a></p>
             <p>Inspired by <a href="https://toorainy.com" target="_blank">toorainy.com</a></p>
         </footer>
     </div>
