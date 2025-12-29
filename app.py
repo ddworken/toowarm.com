@@ -24,9 +24,10 @@ FETCH_INTERVAL = 3600  # 1 hour
 AVALANCHE_CACHE_HOURS = 6  # Cache future forecasts for 6 hours
 DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///ice_climbing_weather.db')
 
-# HTML Cache Configuration (stale-while-revalidate pattern)
+# HTML Cache Configuration
 HTML_CACHE_FRESH_SECONDS = 300  # 5 minutes - serve cached HTML as fresh
 HTML_CACHE_STALE_SECONDS = 600  # 10 minutes - serve stale while revalidating
+HTML_CACHE_REFRESH_INTERVAL = 180  # 3 minutes - background refresh interval
 
 # NCEI Climate Data Online (CDO) API Configuration
 # Get token from: https://www.ncdc.noaa.gov/cdo-web/token
@@ -87,7 +88,8 @@ def _generate_index_html():
             locations_data.append(result)
 
     render_start = _time.time()
-    with app.app_context():
+    # Use test_request_context for url_for() to work outside of requests
+    with app.test_request_context():
         html = render_template('index.html', locations=locations_data)
     render_elapsed = _time.time() - render_start
     logger.info(f"PERF: render_template took {render_elapsed:.3f}s")
@@ -163,6 +165,33 @@ def get_cached_index_html():
             'generating': False
         }
     return html
+
+
+def html_cache_warmer_worker():
+    """
+    Background worker that proactively regenerates HTML cache every 3 minutes.
+
+    This ensures the cache is always warm, so users never hit cold cache latency.
+    """
+    global _html_cache
+    logger.info("HTML cache warmer worker started")
+
+    while True:
+        try:
+            logger.info("Cache warmer: regenerating HTML cache")
+            html = _generate_index_html()
+            with _html_cache_lock:
+                _html_cache = {
+                    'html': html,
+                    'generated_at': time.time(),
+                    'generating': False
+                }
+            logger.info("Cache warmer: HTML cache regenerated successfully")
+        except Exception as e:
+            logger.error(f"Cache warmer: HTML regeneration failed: {e}")
+
+        # Sleep for 3 minutes before next refresh
+        time.sleep(HTML_CACHE_REFRESH_INTERVAL)
 
 
 # ============================================================================
@@ -2590,7 +2619,16 @@ def main():
     collector_thread.start()
     logger.info("Weather collector thread started")
 
-    # Give the collector a moment to initialize
+    # Start HTML cache warmer in background thread
+    cache_warmer_thread = threading.Thread(
+        target=html_cache_warmer_worker,
+        daemon=True,
+        name="HTMLCacheWarmer"
+    )
+    cache_warmer_thread.start()
+    logger.info("HTML cache warmer thread started")
+
+    # Give the threads a moment to initialize and warm the cache
     time.sleep(2)
 
     # Start Flask web server (blocks here)
