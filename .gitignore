@@ -211,3 +211,8 @@ __marimo__/
 
 # Cloudflared tunnel binary
 cloudflared
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal

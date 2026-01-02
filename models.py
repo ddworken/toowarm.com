@@ -31,6 +31,13 @@ class WeatherForecast(Base):
     short_forecast = Column(String(200), nullable=False)
     detailed_forecast = Column(Text, nullable=False)
 
+    # Snow accumulation (from gridpoints API, in millimeters)
+    snow_accumulation_mm = Column(Float, nullable=True)
+
+    # Period timing (for matching with gridpoints data)
+    period_start = Column(DateTime, nullable=True)
+    period_end = Column(DateTime, nullable=True)
+
     # Additional metadata
     grid_x = Column(Integer)
     grid_y = Column(Integer)

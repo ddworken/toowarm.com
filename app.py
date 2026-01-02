@@ -282,6 +282,114 @@ def apply_elevation_correction(temperature, location_name):
 # Weather Data Collection Functions
 # ============================================================================
 
+def parse_iso_duration(duration_str):
+    """
+    Parse ISO 8601 duration string (e.g., 'PT6H' = 6 hours).
+
+    Returns: timedelta
+    """
+    import re
+    match = re.match(r'PT(\d+)H', duration_str)
+    if match:
+        return timedelta(hours=int(match.group(1)))
+    return timedelta(hours=6)  # Default to 6 hours
+
+
+def parse_iso_datetime_to_utc(iso_string):
+    """
+    Parse ISO datetime string and convert to UTC naive datetime.
+    Handles formats like: '2025-12-30T00:00:00+00:00', '2025-12-29T18:00:00-08:00'
+    """
+    # Handle timezone offset
+    if '+' in iso_string[10:] or iso_string.endswith('Z'):
+        # UTC time (+00:00 or Z)
+        dt_str = iso_string.replace('+00:00', '').replace('Z', '')
+        return datetime.fromisoformat(dt_str)
+    elif '-' in iso_string[10:]:
+        # Has negative offset like -08:00 or -07:00
+        # Find the timezone part (last 6 chars like -08:00)
+        if iso_string[-6] == '-' or iso_string[-6] == '+':
+            dt_str = iso_string[:-6]
+            tz_str = iso_string[-6:]
+            dt = datetime.fromisoformat(dt_str)
+            # Parse offset hours
+            offset_hours = int(tz_str[1:3])
+            offset_mins = int(tz_str[4:6])
+            offset_total = timedelta(hours=offset_hours, minutes=offset_mins)
+            if tz_str[0] == '-':
+                # Negative offset means behind UTC, so add to get UTC
+                dt = dt + offset_total
+            else:
+                dt = dt - offset_total
+            return dt
+    # Fallback: assume it's already UTC-ish
+    return datetime.fromisoformat(iso_string.split('+')[0].split('-08:00')[0].split('-07:00')[0])
+
+
+def fetch_snow_accumulation(grid_id, grid_x, grid_y):
+    """
+    Fetch snow accumulation data from NWS gridpoints API.
+
+    Returns: List of {'start': datetime, 'end': datetime, 'snow_mm': float}
+             All times are in UTC for consistent comparison.
+    """
+    gridpoints_url = f"{BASE_URL}/gridpoints/{grid_id}/{grid_x},{grid_y}"
+
+    try:
+        response = requests.get(gridpoints_url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        snow_data = data.get('properties', {}).get('snowfallAmount', {})
+        values = snow_data.get('values', [])
+
+        result = []
+        for item in values:
+            valid_time = item.get('validTime', '')
+            snow_mm = item.get('value', 0) or 0
+
+            # Parse validTime format: "2025-12-30T00:00:00+00:00/PT6H"
+            if '/' in valid_time:
+                time_part, duration_part = valid_time.split('/')
+                start_time = parse_iso_datetime_to_utc(time_part)
+                duration = parse_iso_duration(duration_part)
+                end_time = start_time + duration
+            else:
+                start_time = parse_iso_datetime_to_utc(valid_time)
+                end_time = start_time + timedelta(hours=6)
+
+            result.append({
+                'start': start_time,
+                'end': end_time,
+                'snow_mm': float(snow_mm)
+            })
+
+        logger.debug(f"  Fetched {len(result)} snow accumulation periods")
+        return result
+
+    except Exception as e:
+        logger.warning(f"  Could not fetch snow data: {e}")
+        return []
+
+
+def get_snow_for_period(snow_data, period_start, period_end):
+    """
+    Calculate total snow accumulation for a forecast period.
+
+    Sums snow from all overlapping time ranges in the gridpoints data.
+    """
+    if not snow_data:
+        return None
+
+    total_snow = 0.0
+    for item in snow_data:
+        # Check if snow period overlaps with forecast period
+        if item['end'] > period_start and item['start'] < period_end:
+            total_snow += item['snow_mm']
+
+    return total_snow if total_snow > 0 else None
+
+
 def fetch_and_store_weather(location):
     """
     Fetch weather forecast for a specific location and store it in the database.
@@ -316,7 +424,10 @@ def fetch_and_store_weather(location):
 
         periods = forecast_data['properties']['periods']
 
-        # Step 3: Store in database
+        # Step 3: Fetch snow accumulation data from gridpoints API
+        snow_data = fetch_snow_accumulation(grid_id, grid_x, grid_y)
+
+        # Step 4: Store in database
         _, SessionLocal = init_db(DATABASE_URL)
         session = SessionLocal()
 
@@ -325,6 +436,13 @@ def fetch_and_store_weather(location):
             records_added = 0
 
             for period in periods:
+                # Parse period start/end times and convert to UTC for snow matching
+                period_start_utc = parse_iso_datetime_to_utc(period['startTime'])
+                period_end_utc = parse_iso_datetime_to_utc(period['endTime'])
+
+                # Get snow accumulation for this period (using UTC times)
+                snow_mm = get_snow_for_period(snow_data, period_start_utc, period_end_utc)
+
                 weather_record = WeatherForecast(
                     location_name=location['name'],
                     latitude=location['latitude'],
@@ -337,6 +455,9 @@ def fetch_and_store_weather(location):
                     wind_direction=period['windDirection'],
                     short_forecast=period['shortForecast'],
                     detailed_forecast=period['detailedForecast'],
+                    snow_accumulation_mm=snow_mm,
+                    period_start=period_start_utc,
+                    period_end=period_end_utc,
                     grid_id=grid_id,
                     grid_x=grid_x,
                     grid_y=grid_y
@@ -580,16 +701,30 @@ def fetch_avalanche_forecast(zone_id, forecast_date, location_elevation_ft=None,
                 }
             }
 
+        # Skip fetching for dates more than 3 days in the future (forecasts rarely exist that far out)
+        if forecast_date > today + timedelta(days=3):
+            return {
+                'danger_rating': None,
+                'danger_level_text': 'No forecast',
+                'zone_name': f'Zone {zone_id}',
+                'no_forecast': True,
+                'elevation_breakdown': None
+            }
+
         # Check if we have valid cached data (including elevation breakdown)
         if cached:
             cache_is_valid = False
-            # For past dates, cache never expires
-            if forecast_date < today:
-                cache_is_valid = True
+            cache_age = datetime.utcnow() - cached.fetched_at
+
+            # "no_forecast" entries expire after 2 hours (forecasts may be published)
+            if cached.no_forecast:
+                if cache_age.total_seconds() < 2 * 3600:  # 2 hours
+                    cache_is_valid = True
             else:
-                # For current/future dates, check if cache is fresh
-                cache_age = datetime.utcnow() - cached.fetched_at
-                if cache_age.total_seconds() < AVALANCHE_CACHE_HOURS * 3600:
+                # Valid forecasts: past dates never expire, current/future expire after 6 hours
+                if forecast_date < today:
+                    cache_is_valid = True
+                elif cache_age.total_seconds() < AVALANCHE_CACHE_HOURS * 3600:
                     cache_is_valid = True
 
             if cache_is_valid:
@@ -2483,7 +2618,8 @@ def get_location_data(location_name, days=7):
                     'avalanche_danger': avalanche_data['danger_level_text'],
                     'avalanche_rating': avalanche_data['danger_rating'],
                     'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating']),
-                    'avalanche_elevation_breakdown': avalanche_data.get('elevation_breakdown')
+                    'avalanche_elevation_breakdown': avalanche_data.get('elevation_breakdown'),
+                    'snow_accumulation_mm': forecast.snow_accumulation_mm
                 })
 
         logger.info(f"PERF [{location_name}]: historical loop took {_time.time()-_t4:.3f}s")
@@ -2551,7 +2687,8 @@ def get_location_data(location_name, days=7):
                     'avalanche_danger': avalanche_data['danger_level_text'],
                     'avalanche_rating': avalanche_data['danger_rating'],
                     'avalanche_color': get_avalanche_color(avalanche_data['danger_level_text'], avalanche_data['danger_rating']),
-                    'avalanche_elevation_breakdown': avalanche_data.get('elevation_breakdown')
+                    'avalanche_elevation_breakdown': avalanche_data.get('elevation_breakdown'),
+                    'snow_accumulation_mm': forecast.snow_accumulation_mm
                 })
 
         logger.info(f"PERF [{location_name}]: future loop took {_time.time()-_t5:.3f}s")

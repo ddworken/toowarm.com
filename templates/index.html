@@ -157,6 +157,13 @@
             color: white;
         }
 
+        /* Snow accumulation */
+        .snow-positive {
+            background-color: #e3f2fd;
+            color: #1565c0;
+            font-weight: bold;
+        }
+
         /* Condition color coding */
         .condition-excellent {
             background-color: #0d5e0d;
@@ -419,6 +426,7 @@
                         <th>Temperature</th>
                         <th>Wind</th>
                         <th>Conditions</th>
+                        <th>Snow Accumulation</th>
                         <th>Avalanche Danger</th>
                     </tr>
                 </thead>
@@ -456,6 +464,13 @@
                         </td>
                         <td class="score-cell {{ period.forecast_color }}" style="cursor: help;" data-tooltip="{{ period.detailed_forecast }}">
                             {{ period.short_forecast }}
+                        </td>
+                        <td class="{% if period.snow_accumulation_mm and period.snow_accumulation_mm > 0 %}snow-positive{% endif %}">
+                            {% if period.snow_accumulation_mm and period.snow_accumulation_mm > 0 %}
+                                {{ "%.1f"|format(period.snow_accumulation_mm / 25.4) }}"
+                            {% else %}
+                                -
+                            {% endif %}
                         </td>
                         <td class="score-cell {{ period.avalanche_color }}" style="cursor: help;" {% if period.avalanche_elevation_breakdown %}data-tooltip="Avalanche Danger by Elevation:
 Lower (<3000 ft): {{ period.avalanche_elevation_breakdown.lower.text }} ({{ period.avalanche_elevation_breakdown.lower.rating }}){% if period.avalanche_elevation_breakdown.lower.is_current %} (this){% endif %}
